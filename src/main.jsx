@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react'
 import { createRoot } from 'react-dom/client'
 import {
-  LayoutDashboard, Users, FileText, Settings, Plus, LogOut,
+  LayoutDashboard, Users, UserCog, FileText, Settings, Plus, LogOut,
   Trash2, Printer, Save, ChevronLeft, ReceiptText
 } from 'lucide-react'
 import { supabase } from './supabase'
@@ -14,6 +14,7 @@ function App() {
   const [session, setSession] = useState(null)
   const [loading, setLoading] = useState(true)
   const [business, setBusiness] = useState(null)
+  const [memberRole, setMemberRole] = useState(null)
   const [page, setPage] = useState('dashboard')
 
   useEffect(() => {
@@ -37,7 +38,10 @@ function App() {
       .eq('user_id', session.user.id)
       .limit(1)
     if (error) return console.error(error)
-    if (memberships?.length) setBusiness(memberships[0].businesses)
+    if (memberships?.length) {
+      setBusiness(memberships[0].businesses)
+      setMemberRole(memberships[0].role)
+    }
   }
 
   if (loading) return <div className="center-screen">Loading…</div>
@@ -46,11 +50,12 @@ function App() {
 
   return (
     <div className="app-shell">
-      <Sidebar page={page} setPage={setPage} business={business} />
+      <Sidebar page={page} setPage={setPage} business={business} role={memberRole} />
       <main className="main">
         {page === 'dashboard' && <Dashboard business={business} setPage={setPage} />}
         {page === 'customers' && <Customers business={business} />}
         {page === 'documents' && <Documents business={business} />}
+        {page === 'team' && <Team business={business} currentRole={memberRole} />}
         {page === 'new-invoice' && <DocumentEditor business={business} type="invoice" onClose={()=>setPage('documents')} />}
         {page === 'new-quote' && <DocumentEditor business={business} type="quote" onClose={()=>setPage('documents')} />}
         {page === 'settings' && <BusinessSettings business={business} onSaved={loadBusiness} />}
@@ -118,11 +123,12 @@ function Onboarding({user, onDone}) {
   </div></div>
 }
 
-function Sidebar({page,setPage,business}) {
+function Sidebar({page,setPage,business,role}) {
   const nav = [
     ['dashboard', LayoutDashboard, 'Dashboard'],
     ['customers', Users, 'Customers'],
     ['documents', FileText, 'Quotes & Invoices'],
+    ...(role==='owner' || role==='admin' ? [['team', UserCog, 'Team']] : []),
     ['settings', Settings, 'Settings'],
   ]
   return <aside className="sidebar">
@@ -527,6 +533,92 @@ function DocumentView({doc,business,onBack,onChanged}) {
       <div className="invoice-bottom"><div className="payment-block">{doc.notes&&<><h4>NOTES</h4><p>{doc.notes}</p></>}{doc.payment_instructions&&<><h4>PAYMENT</h4><p>{doc.payment_instructions}</p></>}</div>
         <div className="invoice-totals"><div><span>Subtotal</span><b>{money(doc.subtotal)}</b></div>{Number(doc.tax_amount)>0&&<div><span>Tax</span><b>{money(doc.tax_amount)}</b></div>}{Number(doc.discount_amount)>0&&<div><span>Discount</span><b>-{money(doc.discount_amount)}</b></div>}<div className="invoice-grand"><span>Total</span><b>{money(doc.total_amount)}</b></div></div></div>
     </article>
+  </section>
+}
+
+
+
+function Team({business,currentRole}) {
+  const [members,setMembers]=useState([])
+  const [email,setEmail]=useState('')
+  const [role,setRole]=useState('technician')
+  const [busy,setBusy]=useState(false)
+
+  useEffect(()=>{load()},[])
+
+  async function load(){
+    const {data,error}=await supabase.rpc('list_business_team',{p_business_id:business.id})
+    if(error) return alert(error.message)
+    setMembers(data||[])
+  }
+
+  async function addMember(e){
+    e.preventDefault()
+    if(!email.trim()) return
+    setBusy(true)
+    const {error}=await supabase.rpc('add_business_member_by_email',{
+      p_business_id:business.id,
+      p_email:email.trim(),
+      p_role:role
+    })
+    setBusy(false)
+    if(error) return alert(error.message)
+    setEmail('')
+    setRole('technician')
+    await load()
+  }
+
+  async function changeRole(member,newRole){
+    if(member.role===newRole) return
+    const {error}=await supabase.rpc('set_business_member_role',{
+      p_business_id:business.id,
+      p_user_id:member.user_id,
+      p_role:newRole
+    })
+    if(error) return alert(error.message)
+    await load()
+  }
+
+  return <section>
+    <Header title="Team" subtitle="Add users and control what role they have in Atlas Support."/>
+    <div className="card team-add-card">
+      <h3>Add user</h3>
+      <p className="muted">The user must create an Atlas Support account with this email first. Then add that email here.</p>
+      <form className="team-add-form" onSubmit={addMember}>
+        <label>Email<input type="email" value={email} onChange={e=>setEmail(e.target.value)} placeholder="user@example.com" required/></label>
+        <label>Role<select value={role} onChange={e=>setRole(e.target.value)}>
+          {currentRole==='owner'&&<option value="admin">Admin</option>}
+          <option value="technician">Technician</option>
+          <option value="viewer">Viewer</option>
+        </select></label>
+        <button className="primary" disabled={busy}><Plus size={18}/>{busy?'Adding…':'Add User'}</button>
+      </form>
+    </div>
+    <div className="card table-card">
+      {members.length===0?<Empty text="No team members found."/>:
+      <table><thead><tr><th>User</th><th>Email</th><th>Role</th></tr></thead>
+      <tbody>{members.map(m=><tr key={m.user_id}>
+        <td><strong>{m.display_name||m.email?.split('@')[0]||'User'}</strong></td>
+        <td>{m.email}</td>
+        <td>
+          <select className="role-select" value={m.role} onChange={e=>changeRole(m,e.target.value)} disabled={currentRole==='admin'&&(m.role==='owner'||m.role==='admin')}>
+            {currentRole==='owner'&&<option value="owner">Owner</option>}
+            <option value="admin" disabled={currentRole!=='owner'}>Admin</option>
+            <option value="technician">Technician</option>
+            <option value="viewer">Viewer</option>
+          </select>
+        </td>
+      </tr>)}</tbody></table>}
+    </div>
+    <div className="card role-help">
+      <h3>Role access</h3>
+      <div className="role-grid">
+        <div><strong>Owner</strong><span>Full access, including business settings and team roles.</span></div>
+        <div><strong>Admin</strong><span>Can manage customers, billing, documents and team members except owner/admin roles.</span></div>
+        <div><strong>Technician</strong><span>Standard working role. Team-management access is hidden.</span></div>
+        <div><strong>Viewer</strong><span>Reserved for read-only access as permissions are tightened in later updates.</span></div>
+      </div>
+    </div>
   </section>
 }
 
