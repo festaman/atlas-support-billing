@@ -9,7 +9,7 @@ React/Vite + Supabase billing app for Atlas Support.
 - Billing frequencies: Immediate, Weekly, Monthly, On demand
 - Quotes and invoices with free-form line items
 - Accepted quotes can be converted into linked draft invoices
-- Unbilled Work queue for labor/material/other charges
+- Master Billing queue for labor/material/other charges
 - Bill Now creates one draft invoice from all currently unbilled work for a customer
 - Automatic document numbering and totals in Supabase
 - Printable/PDF quote and invoice layout
@@ -36,3 +36,8 @@ VITE_SUPABASE_PUBLISHABLE_KEY=your-supabase-publishable-key
 ## Deploying updates
 
 Commit and push changes to the connected GitHub repository. Vercel will automatically build and deploy the `main` branch.
+
+
+## Master billing workflow
+
+For customers billed on demand, create normal invoices as work is completed. When you are ready to send one combined bill, open the customer and choose **Create Master Bill**. The app creates a new invoice containing one line for each unpaid invoice, using the exact final amount from that invoice. The original unpaid invoice records are then deleted. A full JSON snapshot of their metadata and line items is stored on the master invoice in `consolidated_sources` for traceability. Paid and void invoices are never included.

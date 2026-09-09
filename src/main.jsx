@@ -51,7 +51,6 @@ function App() {
         {page === 'dashboard' && <Dashboard business={business} setPage={setPage} />}
         {page === 'customers' && <Customers business={business} />}
         {page === 'documents' && <Documents business={business} />}
-        {page === 'unbilled' && <UnbilledWork business={business} setPage={setPage} />}
         {page === 'new-invoice' && <DocumentEditor business={business} type="invoice" onClose={()=>setPage('documents')} />}
         {page === 'new-quote' && <DocumentEditor business={business} type="quote" onClose={()=>setPage('documents')} />}
         {page === 'settings' && <BusinessSettings business={business} onSaved={loadBusiness} />}
@@ -124,7 +123,6 @@ function Sidebar({page,setPage,business}) {
     ['dashboard', LayoutDashboard, 'Dashboard'],
     ['customers', Users, 'Customers'],
     ['documents', FileText, 'Quotes & Invoices'],
-    ['unbilled', ReceiptText, 'Unbilled Work'],
     ['settings', Settings, 'Settings'],
   ]
   return <aside className="sidebar">
@@ -255,36 +253,34 @@ function CustomerDetails({business,customer,onBack,onSaved}) {
   const [current,setCurrent]=useState(customer)
   const [edit,setEdit]=useState(false)
   const [docs,setDocs]=useState([])
-  const [unbilled,setUnbilled]=useState([])
-  const [billing,setBilling]=useState(false)
+  const [consolidating,setConsolidating]=useState(false)
   const [message,setMessage]=useState('')
   useEffect(()=>{load()},[customer.id])
 
   async function load(){
-    const [{data:c},{data:d},{data:u}] = await Promise.all([
+    const [{data:c},{data:d}] = await Promise.all([
       supabase.from('customers').select('*').eq('id',customer.id).single(),
-      supabase.from('documents').select('id,document_number,document_type,issue_date,status,total_amount').eq('customer_id',customer.id).order('created_at',{ascending:false}),
-      supabase.from('unbilled_items').select('*').eq('customer_id',customer.id).is('invoiced_document_id',null).order('service_date',{ascending:true}).order('created_at',{ascending:true})
+      supabase.from('documents').select('id,document_number,document_type,issue_date,status,total_amount,is_master_invoice').eq('customer_id',customer.id).order('created_at',{ascending:false})
     ])
     if(c){setCurrent(c);onSaved?.(c)}
-    setDocs(d||[]); setUnbilled(u||[])
+    setDocs(d||[])
   }
 
-  const unbilledTotal=unbilled.reduce((a,i)=>a+(Number(i.quantity)||0)*(Number(i.unit_price)||0),0)
   const openInvoices=docs.filter(d=>d.document_type==='invoice'&&!['paid','void'].includes(d.status))
   const quotes=docs.filter(d=>d.document_type==='quote')
   const paidInvoices=docs.filter(d=>d.document_type==='invoice'&&d.status==='paid')
   const outstanding=openInvoices.reduce((a,d)=>a+Number(d.total_amount||0),0)
 
-  async function billNow(){
-    if(!unbilled.length) return
-    if(!confirm(`Create one invoice for ${current.name} containing ${unbilled.length} unbilled item${unbilled.length===1?'':'s'} (${money(unbilledTotal)})?`)) return
-    setBilling(true); setMessage('')
-    const {data:invoiceId,error}=await supabase.rpc('bill_unbilled_customer',{p_customer_id:current.id})
-    setBilling(false)
+  async function createMasterBill(){
+    if(!openInvoices.length) return
+    const list=openInvoices.map(d=>d.document_number).join(', ')
+    if(!confirm(`Create one master bill for ${current.name} from ${openInvoices.length} unpaid invoice${openInvoices.length===1?'':'s'} (${money(outstanding)})?\n\nThis will permanently delete the original invoice records after their numbers, totals, and line-item details are saved inside the new master bill.\n\nInvoices: ${list}`)) return
+    setConsolidating(true); setMessage('')
+    const {data:invoiceId,error}=await supabase.rpc('consolidate_unpaid_invoices',{p_customer_id:current.id})
+    setConsolidating(false)
     if(error) return alert(error.message)
     const {data:invoice}=await supabase.from('documents').select('document_number,total_amount').eq('id',invoiceId).single()
-    setMessage(`${invoice?.document_number||'Invoice'} created${invoice?.total_amount!=null?` for ${money(invoice.total_amount)}`:''}.`)
+    setMessage(`${invoice?.document_number||'Master bill'} created${invoice?.total_amount!=null?` for ${money(invoice.total_amount)}`:''}. The previous unpaid invoices were consolidated and deleted.`)
     await load()
   }
 
@@ -292,15 +288,15 @@ function CustomerDetails({business,customer,onBack,onSaved}) {
   return <section>
     <div className="customer-detail-head no-print">
       <button className="back" onClick={onBack}><ChevronLeft size={18}/>Back to Customers</button>
-      <div className="customer-detail-actions"><button className="secondary" onClick={()=>setEdit(true)}>Edit Customer</button>{unbilled.length>0&&<button className="primary" onClick={billNow} disabled={billing}><ReceiptText size={17}/>{billing?'Billing…':'Bill Now'}</button>}</div>
+      <div className="customer-detail-actions"><button className="secondary" onClick={()=>setEdit(true)}>Edit Customer</button>{openInvoices.length>0&&<button className="primary" onClick={createMasterBill} disabled={consolidating}><ReceiptText size={17}/>{consolidating?'Consolidating…':'Create Master Bill'}</button>}</div>
     </div>
     <Header title={current.name} subtitle={`${current.contact_name||'Customer'} · ${billingLabel||'Immediate'} billing`}/>
     {message&&<div className="notice success-notice">{message}</div>}
     <div className="stats customer-stats">
-      <Stat label="Unbilled work" value={money(unbilledTotal)}/>
       <Stat label="Open invoices" value={openInvoices.length}/>
       <Stat label="Outstanding" value={money(outstanding)}/>
       <Stat label="Quotes" value={quotes.length}/>
+      <Stat label="Paid invoices" value={paidInvoices.length}/>
     </div>
 
     <div className="customer-detail-grid">
@@ -315,19 +311,22 @@ function CustomerDetails({business,customer,onBack,onSaved}) {
         </dl>
         {current.notes&&<div className="customer-notes"><h4>Notes</h4><p>{current.notes}</p></div>}
       </div>
-      <div className="card"><div className="card-title"><h3>Unbilled work</h3>{unbilled.length>0&&<strong>{money(unbilledTotal)}</strong>}</div>
-        {unbilled.length===0?<Empty text="No unbilled work for this customer."/>:<table><thead><tr><th>Date</th><th>Description</th><th className="right">Amount</th></tr></thead><tbody>{unbilled.map(i=><tr key={i.id}><td>{i.service_date}</td><td>{i.description}</td><td className="right">{money((Number(i.quantity)||0)*(Number(i.unit_price)||0))}</td></tr>)}</tbody></table>}
+      <div className="card"><div className="card-title"><h3>Master billing</h3></div>
+        <p className="muted">When you are ready to bill this customer, create one master bill from every unpaid invoice. The original unpaid invoices are then removed and replaced by the new master bill.</p>
+        <div className="sumrow"><span>Invoices waiting</span><strong>{openInvoices.length}</strong></div>
+        <div className="sumrow"><span>Combined balance</span><strong>{money(outstanding)}</strong></div>
+        {openInvoices.length>0?<button className="primary wide no-print" onClick={createMasterBill} disabled={consolidating}><ReceiptText size={17}/>{consolidating?'Consolidating…':'Create Master Bill'}</button>:<Empty text="No unpaid invoices to consolidate."/>}
       </div>
     </div>
 
     <div className="card table-card"><div className="card-title customer-section-title"><h3>Open invoices</h3></div>
-      {openInvoices.length===0?<Empty text="No open invoices."/>:<table><thead><tr><th>Invoice</th><th>Date</th><th>Status</th><th className="right">Total</th></tr></thead><tbody>{openInvoices.map(d=><tr key={d.id}><td><strong>{d.document_number}</strong></td><td>{d.issue_date}</td><td><span className="pill">{d.status}</span></td><td className="right">{money(d.total_amount)}</td></tr>)}</tbody></table>}
+      {openInvoices.length===0?<Empty text="No open invoices."/>:<table><thead><tr><th>Invoice</th><th>Date</th><th>Status</th><th className="right">Total</th></tr></thead><tbody>{openInvoices.map(d=><tr key={d.id}><td><strong>{d.document_number}</strong>{d.is_master_invoice&&<span className="pill master-pill">master</span>}</td><td>{d.issue_date}</td><td><span className="pill">{d.status}</span></td><td className="right">{money(d.total_amount)}</td></tr>)}</tbody></table>}
     </div>
     <div className="card table-card"><div className="card-title customer-section-title"><h3>Quotes</h3></div>
       {quotes.length===0?<Empty text="No quotes for this customer."/>:<table><thead><tr><th>Quote</th><th>Date</th><th>Status</th><th className="right">Total</th></tr></thead><tbody>{quotes.map(d=><tr key={d.id}><td><strong>{d.document_number}</strong></td><td>{d.issue_date}</td><td><span className="pill">{d.status}</span></td><td className="right">{money(d.total_amount)}</td></tr>)}</tbody></table>}
     </div>
     <div className="card table-card"><div className="card-title customer-section-title"><h3>Paid invoice history</h3></div>
-      {paidInvoices.length===0?<Empty text="No paid invoices yet."/>:<table><thead><tr><th>Invoice</th><th>Date</th><th>Status</th><th className="right">Total</th></tr></thead><tbody>{paidInvoices.map(d=><tr key={d.id}><td><strong>{d.document_number}</strong></td><td>{d.issue_date}</td><td><span className="pill">{d.status}</span></td><td className="right">{money(d.total_amount)}</td></tr>)}</tbody></table>}
+      {paidInvoices.length===0?<Empty text="No paid invoices yet."/>:<table><thead><tr><th>Invoice</th><th>Date</th><th>Status</th><th className="right">Total</th></tr></thead><tbody>{paidInvoices.map(d=><tr key={d.id}><td><strong>{d.document_number}</strong>{d.is_master_invoice&&<span className="pill master-pill">master</span>}</td><td>{d.issue_date}</td><td><span className="pill">{d.status}</span></td><td className="right">{money(d.total_amount)}</td></tr>)}</tbody></table>}
     </div>
     {edit&&<CustomerModal business={business} customer={current} onClose={()=>setEdit(false)} onSaved={async(updated)=>{setEdit(false);setCurrent(updated);onSaved?.(updated);await load()}}/>}
   </section>
@@ -338,120 +337,6 @@ function formatCustomerAddress(c,prefix){
   return lines.length?lines.join(', '):'—'
 }
 
-function UnbilledWork({business,setPage}) {
-  const [customers,setCustomers]=useState([])
-  const [items,setItems]=useState([])
-  const [saving,setSaving]=useState(false)
-  const [billing,setBilling]=useState(null)
-  const [message,setMessage]=useState('')
-  const [form,setForm]=useState({customer_id:'',service_date:today(),item_type:'labor',description:'',quantity:1,unit_price:0,notes:''})
-
-  useEffect(()=>{load()},[])
-
-  async function load(){
-    const [{data:customerData},{data:itemData}] = await Promise.all([
-      supabase.from('customers').select('*').eq('business_id',business.id).order('name'),
-      supabase.from('unbilled_items').select('*, customers(name,default_billing_frequency)').eq('business_id',business.id).is('invoiced_document_id',null).order('service_date',{ascending:true}).order('created_at',{ascending:true})
-    ])
-    setCustomers(customerData||[])
-    setItems(itemData||[])
-    if(!form.customer_id && customerData?.length){
-      const preferred=customerData.find(c=>c.default_billing_frequency==='on_demand') || customerData[0]
-      setForm(f=>({...f,customer_id:preferred.id}))
-    }
-  }
-
-  const change=(k,v)=>setForm(f=>({...f,[k]:v}))
-  const grouped=useMemo(()=>{
-    const map={}
-    for(const i of items){
-      const id=i.customer_id
-      if(!map[id]) map[id]={customer:customers.find(c=>c.id===id),items:[],total:0}
-      map[id].items.push(i)
-      map[id].total += (Number(i.quantity)||0)*(Number(i.unit_price)||0)
-    }
-    return Object.values(map).sort((a,b)=>(a.customer?.name||'').localeCompare(b.customer?.name||''))
-  },[items,customers])
-
-  async function addWork(e){
-    e.preventDefault()
-    if(!form.customer_id) return alert('Choose a customer.')
-    if(!form.description.trim()) return alert('Enter a description.')
-    setSaving(true); setMessage('')
-    const {data:userData}=await supabase.auth.getUser()
-    const {error}=await supabase.from('unbilled_items').insert({
-      business_id:business.id,
-      customer_id:form.customer_id,
-      service_date:form.service_date,
-      item_type:form.item_type||null,
-      description:form.description.trim(),
-      quantity:Number(form.quantity)||0,
-      unit_price:Number(form.unit_price)||0,
-      notes:form.notes||null,
-      created_by:userData?.user?.id||null
-    })
-    setSaving(false)
-    if(error) return alert(error.message)
-    setForm(f=>({...f,description:'',quantity:1,unit_price:0,notes:''}))
-    setMessage('Work added to the unbilled queue.')
-    await load()
-  }
-
-  async function removeWork(id){
-    if(!confirm('Remove this unbilled item?')) return
-    const {error}=await supabase.from('unbilled_items').delete().eq('id',id)
-    if(error) return alert(error.message)
-    await load()
-  }
-
-  async function billNow(customer){
-    const customerItems=items.filter(i=>i.customer_id===customer.id)
-    if(!customerItems.length) return
-    const total=customerItems.reduce((a,i)=>a+(Number(i.quantity)||0)*(Number(i.unit_price)||0),0)
-    if(!confirm(`Create one invoice for ${customer.name} containing ${customerItems.length} unbilled item${customerItems.length===1?'':'s'} (${money(total)})?`)) return
-    setBilling(customer.id); setMessage('')
-    const {data:invoiceId,error}=await supabase.rpc('bill_unbilled_customer',{p_customer_id:customer.id})
-    setBilling(null)
-    if(error) return alert(error.message)
-    const {data:invoice}=await supabase.from('documents').select('document_number,total_amount').eq('id',invoiceId).single()
-    setMessage(`${invoice?.document_number||'Invoice'} created for ${customer.name}${invoice?.total_amount!=null?` — ${money(invoice.total_amount)}`:''}.`)
-    await load()
-  }
-
-  return <section>
-    <Header title="Unbilled Work" subtitle="Add work as you go, then create one invoice whenever you are ready to bill."/>
-    {message&&<div className="notice success-notice">{message}</div>}
-    <div className="editor-grid unbilled-grid">
-      <form className="card" onSubmit={addWork}>
-        <div className="card-title"><h3>Add unbilled work</h3></div>
-        <div className="grid2">
-          <label>Customer<select value={form.customer_id} onChange={e=>change('customer_id',e.target.value)} required><option value="">Select customer…</option>{customers.map(c=><option key={c.id} value={c.id}>{c.name}{c.default_billing_frequency==='on_demand'?' — On demand':''}</option>)}</select></label>
-          <label>Service date<input type="date" value={form.service_date} onChange={e=>change('service_date',e.target.value)}/></label>
-          <label>Type<select value={form.item_type} onChange={e=>change('item_type',e.target.value)}><option value="labor">Labor</option><option value="material">Material</option><option value="other">Other</option></select></label>
-          <label>Description<input value={form.description} onChange={e=>change('description',e.target.value)} placeholder="Service, labor, material…" required/></label>
-          <label>Qty / Hrs<input type="number" min="0" step="0.01" value={form.quantity} onChange={e=>change('quantity',e.target.value)}/></label>
-          <label>Rate / Price<input type="number" min="0" step="0.01" value={form.unit_price} onChange={e=>change('unit_price',e.target.value)}/></label>
-          <label className="span2">Internal notes<textarea rows="3" value={form.notes} onChange={e=>change('notes',e.target.value)} placeholder="Optional internal note"/></label>
-        </div>
-        <div className="sumrow work-preview"><span>Line amount</span><strong>{money((Number(form.quantity)||0)*(Number(form.unit_price)||0))}</strong></div>
-        <button className="primary no-print" disabled={saving}><Plus size={18}/>{saving?'Adding…':'Add Unbilled Work'}</button>
-      </form>
-      <div className="card">
-        <div className="card-title"><h3>Ready to bill</h3></div>
-        {grouped.length===0?<Empty text="No unbilled work. Add a charge when work is performed."/>:
-          <div className="billing-groups">{grouped.map(g=><div className="billing-group" key={g.customer?.id||g.items[0].customer_id}>
-            <div><strong>{g.customer?.name||'Customer'}</strong><span>{g.items.length} item{g.items.length===1?'':'s'} · {g.customer?.default_billing_frequency==='on_demand'?'On demand':'Billing: '+(g.customer?.default_billing_frequency||'—')}</span></div>
-            <div className="billing-group-total"><strong>{money(g.total)}</strong><button className="primary" type="button" onClick={()=>billNow(g.customer)} disabled={billing===g.customer?.id}><ReceiptText size={17}/>{billing===g.customer?.id?'Billing…':'Bill Now'}</button></div>
-          </div>)}</div>}
-      </div>
-    </div>
-    <div className="card table-card">
-      <div className="card-title"><h3>Pending items</h3></div>
-      {items.length===0?<Empty text="Nothing waiting to be billed."/>:<table><thead><tr><th>Date</th><th>Customer</th><th>Description</th><th>Type</th><th className="right">Qty</th><th className="right">Rate</th><th className="right">Amount</th><th></th></tr></thead>
-      <tbody>{items.map(i=><tr key={i.id}><td>{i.service_date}</td><td>{i.customers?.name}</td><td>{i.description}</td><td className="capitalize">{i.item_type||'—'}</td><td className="right">{i.quantity}</td><td className="right">{money(i.unit_price)}</td><td className="right"><strong>{money((Number(i.quantity)||0)*(Number(i.unit_price)||0))}</strong></td><td className="right"><button className="icon danger" type="button" onClick={()=>removeWork(i.id)}><Trash2 size={16}/></button></td></tr>)}</tbody></table>}
-    </div>
-  </section>
-}
 
 function Documents({business}) {
   const [docs,setDocs]=useState([])
@@ -466,7 +351,7 @@ function Documents({business}) {
     <div className="card table-card">
       {docs.length===0?<Empty text="No documents yet."/>:
       <table><thead><tr><th>Number</th><th>Date</th><th>Customer</th><th>Type</th><th>Status</th><th className="right">Total</th></tr></thead>
-      <tbody>{docs.map(d=><tr key={d.id} className="clickable" onClick={()=>setView(d)}><td><strong>{d.document_number}</strong></td><td>{d.issue_date}</td><td>{d.customers?.name}</td><td className="capitalize">{d.document_type}</td><td><span className="pill">{d.status}</span></td><td className="right">{money(d.total_amount)}</td></tr>)}</tbody></table>}
+      <tbody>{docs.map(d=><tr key={d.id} className="clickable" onClick={()=>setView(d)}><td><strong>{d.document_number}</strong>{d.is_master_invoice&&<span className="pill master-pill">master</span>}</td><td>{d.issue_date}</td><td>{d.customers?.name}</td><td className="capitalize">{d.document_type}</td><td><span className="pill">{d.status}</span></td><td className="right">{money(d.total_amount)}</td></tr>)}</tbody></table>}
     </div>
   </section>
 }
@@ -631,7 +516,7 @@ function DocumentView({doc,business,onBack,onChanged}) {
       {doc.document_type==='quote'&&convertedInvoice&&<span className="converted-badge">Converted to {convertedInvoice.document_number}</span>}
       <select value={status} onChange={e=>changeStatus(e.target.value)}><option>draft</option><option>sent</option>{doc.document_type==='quote'&&<option>accepted</option>}{doc.document_type==='quote'&&<option>declined</option>}{doc.document_type==='invoice'&&<option>paid</option>}<option>void</option></select><button className="primary" onClick={()=>window.print()}><Printer size={18}/>Print / PDF</button></div></div>
     <article className="invoice-sheet">
-      <div className="invoice-top"><img src="/atlas-support-logo.png"/><div className="doc-meta"><h1>{doc.document_type.toUpperCase()}</h1><strong>{doc.document_number}</strong><span>Date: {doc.issue_date}</span>{doc.due_date&&<span>Due: {doc.due_date}</span>}{doc.valid_until&&<span>Valid until: {doc.valid_until}</span>}</div></div>
+      <div className="invoice-top"><img src="/atlas-support-logo.png"/><div className="doc-meta"><h1>{doc.is_master_invoice?'MASTER BILL':doc.document_type.toUpperCase()}</h1><strong>{doc.document_number}</strong><span>Date: {doc.issue_date}</span>{doc.due_date&&<span>Due: {doc.due_date}</span>}{doc.valid_until&&<span>Valid until: {doc.valid_until}</span>}</div></div>
       {doc.document_type==='quote'&&convertedInvoice&&<div className="conversion-note">Accepted quote converted to invoice <strong>{convertedInvoice.document_number}</strong>.</div>}
       <div className="invoice-parties">
         <div><h4>FROM</h4><strong>{business.name}</strong>{business.address_line1&&<span>{business.address_line1}</span>}{business.city&&<span>{business.city}, {business.state} {business.postal_code}</span>}{business.phone&&<span>{business.phone}</span>}{business.email&&<span>{business.email}</span>}</div>
