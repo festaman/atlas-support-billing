@@ -2,3 +2,37 @@
 @media(max-width:900px){.app-shell{grid-template-columns:1fr}.sidebar{position:relative;height:auto}.sidebar nav{display:grid;grid-template-columns:1fr 1fr}.sidebar-bottom{margin-top:12px}.brand img{max-width:320px}.main{padding:20px}.stats{grid-template-columns:1fr 1fr}.editor-grid{grid-template-columns:1fr}.totals-card{position:relative;top:auto}.invoice-sheet{width:100%;min-height:auto;padding:25px}.invoice-top{flex-direction:column}.invoice-top img{width:100%}.doc-meta{text-align:left}.line-head,.line-row{grid-template-columns:minmax(160px,1fr) 70px 95px 90px 35px}.grid2{grid-template-columns:1fr}.span2{grid-column:auto}}
 @media(max-width:620px){.stats{grid-template-columns:1fr}.main{padding:14px}.card{padding:15px}.line-head{display:none}.line-row{grid-template-columns:1fr 72px 92px 35px;grid-template-areas:"d d d x" "q p a a"}.line-row input:nth-child(1){grid-area:d}.line-row input:nth-child(2){grid-area:q}.line-row input:nth-child(3){grid-area:p}.line-total{grid-area:a}.line-row button{grid-area:x}.invoice-parties,.invoice-bottom{grid-template-columns:1fr}.invoice-sheet{overflow-x:auto}}
 @media print{body{background:#fff}.sidebar,.no-print,.doc-toolbar{display:none!important}.app-shell{display:block}.main{padding:0;max-width:none}.invoice-sheet{border:0;box-shadow:none;margin:0;width:8.5in;min-height:11in;padding:.45in}@page{size:letter;margin:0}}
+
+/* Unbilled work / quote conversion */
+.unbilled-grid{margin-top:18px}
+.billing-groups{display:flex;flex-direction:column;gap:12px}
+.billing-group{display:flex;align-items:center;justify-content:space-between;gap:18px;border:1px solid #ddd;padding:14px 0;border-left:0;border-right:0;border-top:0}
+.billing-group:first-child{border-top:1px solid #ddd}
+.billing-group>div:first-child{display:flex;flex-direction:column;gap:4px}
+.billing-group>div:first-child span{font-size:.82rem;color:#666}
+.billing-group-total{display:flex;align-items:center;gap:14px;white-space:nowrap}
+.work-preview{margin:14px 0 18px;padding-top:12px;border-top:1px solid #e3e3e3}
+.success-notice{margin-bottom:16px}
+.converted-badge{display:inline-flex;align-items:center;padding:9px 12px;border:1px solid #111;font-weight:700;font-size:.84rem;background:#f3f3f3}
+.conversion-note{margin:12px 0 20px;padding:10px 12px;border:1px solid #bbb;background:#f7f7f7;font-size:.9rem}
+@media (max-width: 850px){
+  .billing-group{align-items:flex-start;flex-direction:column}
+  .billing-group-total{width:100%;justify-content:space-between}
+}
+
+/* Customer management */
+.customer-detail-head{display:flex;justify-content:space-between;align-items:center;gap:14px;margin-bottom:22px}
+.customer-detail-actions{display:flex;gap:10px;flex-wrap:wrap}
+.customer-stats{margin-top:22px}
+.customer-detail-grid{display:grid;grid-template-columns:minmax(320px,.9fr) minmax(420px,1.4fr);gap:20px;align-items:start}
+.customer-info-card{height:100%}
+.detail-list{margin:18px 0 0;display:grid;gap:0}
+.detail-list>div{display:grid;grid-template-columns:140px 1fr;gap:18px;padding:11px 0;border-bottom:1px solid #ececea}
+.detail-list dt{font-size:11px;text-transform:uppercase;letter-spacing:.07em;color:#777;font-weight:700}
+.detail-list dd{margin:0;white-space:pre-wrap}
+.customer-notes{margin-top:20px;padding-top:4px}
+.customer-notes h4{margin:0 0 7px;font-size:11px;text-transform:uppercase;letter-spacing:.07em;color:#777}
+.customer-notes p{margin:0;white-space:pre-wrap;color:#444}
+.customer-section-title{padding:18px 20px 0}
+.customer-bottom-fields{margin-top:18px}
+@media(max-width:900px){.customer-detail-grid{grid-template-columns:1fr}.customer-detail-head{align-items:flex-start;flex-direction:column}.customer-detail-actions{width:100%}.customer-detail-actions button{flex:1}.detail-list>div{grid-template-columns:110px 1fr}}

@@ -1,33 +1,38 @@
 # Atlas Support Billing
 
-A lightweight billing app connected to the Atlas Support Supabase project.
+React/Vite + Supabase billing app for Atlas Support.
 
-## Included
-- Email/password authentication
-- First-run business onboarding
+## Current features
+
+- Email/password sign in with Supabase Auth
 - Customer management
-- Quotes and invoices
-- Free-form labor/material/goods line items
-- Automatic totals, tax, and discounts
-- Automatic quote/invoice numbering from Supabase
-- Print / Save as PDF invoice layout
-- Business/payment settings
-- Atlas Support logo and black/white styling
+- Billing frequencies: Immediate, Weekly, Monthly, On demand
+- Quotes and invoices with free-form line items
+- Accepted quotes can be converted into linked draft invoices
+- Unbilled Work queue for labor/material/other charges
+- Bill Now creates one draft invoice from all currently unbilled work for a customer
+- Automatic document numbering and totals in Supabase
+- Printable/PDF quote and invoice layout
+- Business settings
 
-## Run locally
+## Local development
 
-1. Install Node.js 20+
-2. Open a terminal in this folder
-3. Run:
-   npm install
-   npm run dev
-4. Open the address Vite prints (normally http://localhost:5173)
+```bash
+npm install
+npm run dev
+```
 
-## First use
-Create an account on the login screen. The first account can create the Atlas Support business record and becomes the owner through the database trigger.
+## Environment variables
 
-## Production
-Build with:
-   npm run build
+Create a local `.env` file containing:
 
-The `dist` folder can be deployed to Vercel, Netlify, Cloudflare Pages, or another static host.
+```text
+VITE_SUPABASE_URL=your-supabase-project-url
+VITE_SUPABASE_PUBLISHABLE_KEY=your-supabase-publishable-key
+```
+
+`.env` is ignored by Git and should not be committed.
+
+## Deploying updates
+
+Commit and push changes to the connected GitHub repository. Vercel will automatically build and deploy the `main` branch.
