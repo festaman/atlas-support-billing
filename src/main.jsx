@@ -90,6 +90,7 @@ function App() {
   if (!session) return <Auth />
   if (!membershipChecked) return <div className="center-screen">Checking access…</div>
   if (memberRole === 'new_user') return <PendingAccess user={session.user} onCheck={loadBusiness} />
+  if (memberRole === 'removed') return <RemovedAccess user={session.user} />
   if (!business) return <Onboarding user={session.user} onDone={loadBusiness} />
 
   return (
@@ -124,6 +125,20 @@ function PendingAccess({user,onCheck}) {
       <p className="muted">Contact an administrator for access.</p>
       <div className="pending-email">{user.email}</div>
       <button className="primary wide" onClick={check} disabled={busy}>{busy?'Checking…':'Check access'}</button>
+      <button className="secondary wide" onClick={()=>supabase.auth.signOut()}><LogOut size={18}/>Sign out</button>
+    </div>
+  </div>
+}
+
+function RemovedAccess({user}) {
+  return <div className="auth-wrap">
+    <div className="auth-card pending-card">
+      <img src="/atlas-support-logo.png" className="auth-logo" />
+      <div className="pending-badge">Access removed</div>
+      <h2>Your access has been removed</h2>
+      <p>This account no longer has access to the Atlas Support billing system.</p>
+      <p className="muted">Contact an administrator if you believe you should still have access.</p>
+      <div className="pending-email">{user.email}</div>
       <button className="secondary wide" onClick={()=>supabase.auth.signOut()}><LogOut size={18}/>Sign out</button>
     </div>
   </div>
@@ -605,6 +620,7 @@ function DocumentView({doc,business,onBack,onChanged}) {
 
 function Team({business,currentRole}) {
   const [members,setMembers]=useState([])
+  const [invitations,setInvitations]=useState([])
   const [email,setEmail]=useState('')
   const [role,setRole]=useState('technician')
   const [busy,setBusy]=useState(false)
@@ -612,22 +628,30 @@ function Team({business,currentRole}) {
   useEffect(()=>{load()},[])
 
   async function load(){
-    const {data,error}=await supabase.rpc('list_business_team',{p_business_id:business.id})
-    if(error) return alert(error.message)
-    setMembers(data||[])
+    const [teamResult,inviteResult]=await Promise.all([
+      supabase.rpc('list_business_team',{p_business_id:business.id}),
+      supabase.rpc('list_business_invitations',{p_business_id:business.id})
+    ])
+    if(teamResult.error) return alert(teamResult.error.message)
+    if(inviteResult.error) return alert(inviteResult.error.message)
+    setMembers(teamResult.data||[])
+    setInvitations(inviteResult.data||[])
   }
 
   async function addMember(e){
     e.preventDefault()
     if(!email.trim()) return
     setBusy(true)
-    const {error}=await supabase.rpc('add_business_member_by_email',{
+    const {data,error}=await supabase.rpc('add_or_invite_business_member',{
       p_business_id:business.id,
       p_email:email.trim(),
       p_role:role
     })
     setBusy(false)
     if(error) return alert(error.message)
+    const action=data?.[0]?.action
+    if(action==='pending') alert('User added as pending. Have them create an account with this email address.')
+    else alert('User added to the team.')
     setEmail('')
     setRole('technician')
     await load()
@@ -644,11 +668,44 @@ function Team({business,currentRole}) {
     await load()
   }
 
+  async function changeInvitationRole(invitation,newRole){
+    if(invitation.role===newRole) return
+    const {error}=await supabase.rpc('add_or_invite_business_member',{
+      p_business_id:business.id,
+      p_email:invitation.email,
+      p_role:newRole
+    })
+    if(error) return alert(error.message)
+    await load()
+  }
+
+  async function removeMember(member){
+    if(!window.confirm(`Remove ${member.email} from Atlas Support? They will immediately lose access.`)) return
+    const {error}=await supabase.rpc('remove_business_member',{
+      p_business_id:business.id,
+      p_user_id:member.user_id
+    })
+    if(error) return alert(error.message)
+    await load()
+  }
+
+  async function removeInvitation(invitation){
+    if(!window.confirm(`Remove the pending user ${invitation.email}?`)) return
+    const {error}=await supabase.rpc('remove_business_invitation',{
+      p_business_id:business.id,
+      p_invitation_id:invitation.invitation_id
+    })
+    if(error) return alert(error.message)
+    await load()
+  }
+
+  const canRemove=(member)=>member.role!=='owner'&&!(currentRole==='admin'&&member.role==='admin')
+
   return <section>
-    <Header title="Team" subtitle="Add users and control what role they have in Atlas Support."/>
+    <Header title="Team" subtitle="Add users, approve access and manage roles."/>
     <div className="card team-add-card">
       <h3>Add user</h3>
-      <p className="muted">New accounts appear below automatically as New user. You can also assign an existing account directly by email.</p>
+      <p className="muted">Enter an email and choose a role. If the person already has an account, access is added immediately. If they have not signed up yet, they stay Pending until they create an account with that email.</p>
       <form className="team-add-form" onSubmit={addMember}>
         <label>Email<input type="email" value={email} onChange={e=>setEmail(e.target.value)} placeholder="user@example.com" required/></label>
         <label>Role<select value={role} onChange={e=>setRole(e.target.value)}>
@@ -660,22 +717,41 @@ function Team({business,currentRole}) {
         <button className="primary" disabled={busy}><Plus size={18}/>{busy?'Adding…':'Add User'}</button>
       </form>
     </div>
+
     <div className="card table-card">
-      {members.length===0?<Empty text="No team members found."/>:
-      <table><thead><tr><th>User</th><th>Email</th><th>Role</th></tr></thead>
-      <tbody>{members.map(m=><tr key={m.user_id}>
-        <td><strong>{m.display_name||m.email?.split('@')[0]||'User'}</strong></td>
-        <td>{m.email}</td>
-        <td>
-          <select className="role-select" value={m.role} onChange={e=>changeRole(m,e.target.value)} disabled={currentRole==='admin'&&(m.role==='owner'||m.role==='admin')}>
-            {currentRole==='owner'&&<option value="owner">Owner</option>}
-            <option value="admin" disabled={currentRole!=='owner'}>Admin</option>
-            <option value="technician">Technician</option>
-            <option value="viewer">Viewer</option>
-            <option value="new_user">New user</option>
-          </select>
-        </td>
-      </tr>)}</tbody></table>}
+      {members.length===0&&invitations.length===0?<Empty text="No team members found."/>:
+      <table><thead><tr><th>User</th><th>Email</th><th>Role</th><th>Status</th><th className="right">Actions</th></tr></thead>
+      <tbody>
+        {members.map(m=><tr key={m.user_id}>
+          <td><strong>{m.display_name||m.email?.split('@')[0]||'User'}</strong></td>
+          <td>{m.email}</td>
+          <td>
+            <select className="role-select" value={m.role} onChange={e=>changeRole(m,e.target.value)} disabled={currentRole==='admin'&&(m.role==='owner'||m.role==='admin')}>
+              {currentRole==='owner'&&<option value="owner">Owner</option>}
+              <option value="admin" disabled={currentRole!=='owner'}>Admin</option>
+              <option value="technician">Technician</option>
+              <option value="viewer">Viewer</option>
+              <option value="new_user">New user</option>
+            </select>
+          </td>
+          <td><span className={`team-status ${m.role==='new_user'?'pending':''}`}>{m.role==='new_user'?'Awaiting approval':'Active'}</span></td>
+          <td className="right">{canRemove(m)&&<button className="icon danger" title="Remove user" onClick={()=>removeMember(m)}><Trash2 size={18}/></button>}</td>
+        </tr>)}
+        {invitations.map(i=><tr key={i.invitation_id} className="pending-row">
+          <td><strong>{i.email?.split('@')[0]||'Pending user'}</strong></td>
+          <td>{i.email}</td>
+          <td>
+            <select className="role-select" value={i.role} onChange={e=>changeInvitationRole(i,e.target.value)} disabled={currentRole==='admin'&&i.role==='admin'}>
+              <option value="admin" disabled={currentRole!=='owner'}>Admin</option>
+              <option value="technician">Technician</option>
+              <option value="viewer">Viewer</option>
+              <option value="new_user">New user</option>
+            </select>
+          </td>
+          <td><span className="team-status pending">Pending signup</span></td>
+          <td className="right">{!(currentRole==='admin'&&i.role==='admin')&&<button className="icon danger" title="Remove pending user" onClick={()=>removeInvitation(i)}><Trash2 size={18}/></button>}</td>
+        </tr>)}
+      </tbody></table>}
     </div>
     <div className="card role-help">
       <h3>Role access</h3>

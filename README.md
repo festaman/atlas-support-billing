@@ -45,3 +45,6 @@ For customers billed on demand, create normal invoices as work is completed. Whe
 
 ## Pending new-user access
 Newly registered users are automatically assigned the `new_user` role on first authenticated app load. They see an approval message and cannot access business data until an Owner or Admin assigns an active role from the Team page.
+
+- Pending team additions by email: admins can add a user before signup; the selected role is applied on first login.
+- Team removal: removes app access immediately while preserving the authentication account for possible re-approval later.

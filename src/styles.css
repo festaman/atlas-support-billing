@@ -43,3 +43,5 @@
 
 /* Pending new-user access */
 .pending-card{text-align:center}.pending-card h2{margin:14px 0 8px}.pending-card p{line-height:1.5}.pending-badge{display:inline-block;border:1px solid #bbb;background:#f4f4f2;border-radius:999px;padding:5px 10px;font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:.06em}.pending-email{margin:18px 0;padding:10px 12px;background:#f6f6f3;border-radius:8px;font-weight:650}.pending-card .secondary{margin-top:10px}
+
+.team-status{display:inline-block;border-radius:999px;padding:4px 9px;background:#e9f4ea;font-size:12px;font-weight:700}.team-status.pending{background:#f3f0e7;color:#6b5b22}.pending-row{background:#fcfbf7}.table-card .icon.danger:hover{background:#f8eeee;border-radius:7px}
