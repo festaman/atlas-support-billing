@@ -13,6 +13,7 @@ const today = () => new Date().toISOString().slice(0,10)
 function App() {
   const [session, setSession] = useState(null)
   const [loading, setLoading] = useState(true)
+  const [membershipChecked, setMembershipChecked] = useState(false)
   const [business, setBusiness] = useState(null)
   const [memberRole, setMemberRole] = useState(null)
   const [page, setPage] = useState('dashboard')
@@ -27,25 +28,68 @@ function App() {
   }, [])
 
   useEffect(() => {
-    if (session?.user) loadBusiness()
-    else setBusiness(null)
+    if (session?.user) {
+      setMembershipChecked(false)
+      loadBusiness()
+    } else {
+      setBusiness(null)
+      setMemberRole(null)
+      setMembershipChecked(false)
+    }
   }, [session])
 
-  async function loadBusiness() {
-    const { data: memberships, error } = await supabase
+  async function getMembership() {
+    return await supabase
       .from('business_members')
       .select('business_id, role, businesses(*)')
       .eq('user_id', session.user.id)
       .limit(1)
-    if (error) return console.error(error)
-    if (memberships?.length) {
-      setBusiness(memberships[0].businesses)
-      setMemberRole(memberships[0].role)
+  }
+
+  async function loadBusiness() {
+    let { data: memberships, error } = await getMembership()
+    if (error) {
+      console.error(error)
+      setMembershipChecked(true)
+      return
     }
+
+    if (!memberships?.length) {
+      const { error: pendingError } = await supabase.rpc('ensure_pending_membership')
+      if (pendingError) {
+        console.error(pendingError)
+        setMembershipChecked(true)
+        return
+      }
+      const result = await getMembership()
+      memberships = result.data
+      error = result.error
+      if (error) {
+        console.error(error)
+        setMembershipChecked(true)
+        return
+      }
+    }
+
+    if (memberships?.length) {
+      const membership = memberships[0]
+      setMemberRole(membership.role)
+      if (membership.role === 'new_user') {
+        setBusiness(null)
+      } else {
+        setBusiness(membership.businesses)
+      }
+    } else {
+      setMemberRole(null)
+      setBusiness(null)
+    }
+    setMembershipChecked(true)
   }
 
   if (loading) return <div className="center-screen">Loading…</div>
   if (!session) return <Auth />
+  if (!membershipChecked) return <div className="center-screen">Checking access…</div>
+  if (memberRole === 'new_user') return <PendingAccess user={session.user} onCheck={loadBusiness} />
   if (!business) return <Onboarding user={session.user} onDone={loadBusiness} />
 
   return (
@@ -64,6 +108,27 @@ function App() {
   )
 }
 
+function PendingAccess({user,onCheck}) {
+  const [busy,setBusy]=useState(false)
+  async function check(){
+    setBusy(true)
+    await onCheck()
+    setBusy(false)
+  }
+  return <div className="auth-wrap">
+    <div className="auth-card pending-card">
+      <img src="/atlas-support-logo.png" className="auth-logo" />
+      <div className="pending-badge">New user</div>
+      <h2>Account awaiting access</h2>
+      <p>Your account has been created, but an Atlas Support administrator needs to assign you a role before you can use the billing system.</p>
+      <p className="muted">Contact an administrator for access.</p>
+      <div className="pending-email">{user.email}</div>
+      <button className="primary wide" onClick={check} disabled={busy}>{busy?'Checking…':'Check access'}</button>
+      <button className="secondary wide" onClick={()=>supabase.auth.signOut()}><LogOut size={18}/>Sign out</button>
+    </div>
+  </div>
+}
+
 function Auth() {
   const [mode, setMode] = useState('signin')
   const [email, setEmail] = useState('')
@@ -76,7 +141,7 @@ function Auth() {
     setBusy(true); setMsg('')
     const fn = mode === 'signin'
       ? supabase.auth.signInWithPassword({email, password})
-      : supabase.auth.signUp({email, password})
+      : supabase.auth.signUp({email, password, options:{emailRedirectTo:window.location.origin}})
     const { error } = await fn
     setBusy(false)
     if (error) setMsg(error.message)
@@ -583,13 +648,14 @@ function Team({business,currentRole}) {
     <Header title="Team" subtitle="Add users and control what role they have in Atlas Support."/>
     <div className="card team-add-card">
       <h3>Add user</h3>
-      <p className="muted">The user must create an Atlas Support account with this email first. Then add that email here.</p>
+      <p className="muted">New accounts appear below automatically as New user. You can also assign an existing account directly by email.</p>
       <form className="team-add-form" onSubmit={addMember}>
         <label>Email<input type="email" value={email} onChange={e=>setEmail(e.target.value)} placeholder="user@example.com" required/></label>
         <label>Role<select value={role} onChange={e=>setRole(e.target.value)}>
           {currentRole==='owner'&&<option value="admin">Admin</option>}
           <option value="technician">Technician</option>
           <option value="viewer">Viewer</option>
+          <option value="new_user">New user</option>
         </select></label>
         <button className="primary" disabled={busy}><Plus size={18}/>{busy?'Adding…':'Add User'}</button>
       </form>
@@ -606,6 +672,7 @@ function Team({business,currentRole}) {
             <option value="admin" disabled={currentRole!=='owner'}>Admin</option>
             <option value="technician">Technician</option>
             <option value="viewer">Viewer</option>
+            <option value="new_user">New user</option>
           </select>
         </td>
       </tr>)}</tbody></table>}
@@ -616,7 +683,8 @@ function Team({business,currentRole}) {
         <div><strong>Owner</strong><span>Full access, including business settings and team roles.</span></div>
         <div><strong>Admin</strong><span>Can manage customers, billing, documents and team members except owner/admin roles.</span></div>
         <div><strong>Technician</strong><span>Standard working role. Team-management access is hidden.</span></div>
-        <div><strong>Viewer</strong><span>Reserved for read-only access as permissions are tightened in later updates.</span></div>
+        <div><strong>Viewer</strong><span>Read-only access to business records.</span></div>
+        <div><strong>New user</strong><span>Pending approval. Cannot access customers, invoices, quotes, jobs, or settings until an admin assigns another role.</span></div>
       </div>
     </div>
   </section>

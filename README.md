@@ -41,3 +41,7 @@ Commit and push changes to the connected GitHub repository. Vercel will automati
 ## Master billing workflow
 
 For customers billed on demand, create normal invoices as work is completed. When you are ready to send one combined bill, open the customer and choose **Create Master Bill**. The app creates a new invoice containing one line for each unpaid invoice, using the exact final amount from that invoice. The original unpaid invoice records are then deleted. A full JSON snapshot of their metadata and line items is stored on the master invoice in `consolidated_sources` for traceability. Paid and void invoices are never included.
+
+
+## Pending new-user access
+Newly registered users are automatically assigned the `new_user` role on first authenticated app load. They see an approval message and cannot access business data until an Owner or Admin assigns an active role from the Team page.
