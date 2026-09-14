@@ -17,6 +17,7 @@ function App() {
   const [business, setBusiness] = useState(null)
   const [memberRole, setMemberRole] = useState(null)
   const [page, setPage] = useState('dashboard')
+  const [documentToOpen, setDocumentToOpen] = useState(null)
 
   useEffect(() => {
     supabase.auth.getSession().then(({data}) => {
@@ -97,9 +98,9 @@ function App() {
     <div className="app-shell">
       <Sidebar page={page} setPage={setPage} business={business} role={memberRole} />
       <main className="main">
-        {page === 'dashboard' && <Dashboard business={business} setPage={setPage} />}
+        {page === 'dashboard' && <Dashboard business={business} setPage={setPage} onOpenDocument={(id)=>{setDocumentToOpen(id);setPage('documents')}} />}
         {page === 'customers' && <Customers business={business} />}
-        {page === 'documents' && <Documents business={business} />}
+        {page === 'documents' && <Documents business={business} initialDocumentId={documentToOpen} onDocumentOpened={()=>setDocumentToOpen(null)} />}
         {page === 'team' && <Team business={business} currentRole={memberRole} />}
         {page === 'new-invoice' && <DocumentEditor business={business} type="invoice" onClose={()=>setPage('documents')} />}
         {page === 'new-quote' && <DocumentEditor business={business} type="quote" onClose={()=>setPage('documents')} />}
@@ -223,7 +224,7 @@ function Sidebar({page,setPage,business,role}) {
   </aside>
 }
 
-function Dashboard({business,setPage}) {
+function Dashboard({business,setPage,onOpenDocument}) {
   const [stats,setStats] = useState({customers:0, open:0, outstanding:0, quotes:0})
   const [recent,setRecent] = useState([])
   useEffect(()=>{ load() },[])
@@ -258,7 +259,7 @@ function Dashboard({business,setPage}) {
       <div className="card-title"><h3>Recent documents</h3></div>
       {recent.length === 0 ? <Empty text="No quotes or invoices yet."/> :
       <table><thead><tr><th>Number</th><th>Customer</th><th>Type</th><th>Status</th><th className="right">Total</th></tr></thead>
-      <tbody>{recent.map(d=><tr key={d.id}><td>{d.document_number}</td><td>{d.customers?.name}</td><td className="capitalize">{d.document_type}</td><td><span className="pill">{d.status}</span></td><td className="right">{money(d.total_amount)}</td></tr>)}</tbody></table>}
+      <tbody>{recent.map(d=><tr key={d.id} className="clickable" tabIndex={0} title={`Open ${d.document_type} ${d.document_number}`} onClick={()=>onOpenDocument(d.id)} onKeyDown={e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();onOpenDocument(d.id)}}}><td><strong>{d.document_number}</strong></td><td>{d.customers?.name}</td><td className="capitalize">{d.document_type}</td><td><span className="pill">{d.status}</span></td><td className="right">{money(d.total_amount)}</td></tr>)}</tbody></table>}
     </div>
   </section>
 }
@@ -424,13 +425,19 @@ function formatCustomerAddress(c,prefix){
 }
 
 
-function Documents({business}) {
+function Documents({business,initialDocumentId=null,onDocumentOpened}) {
   const [docs,setDocs]=useState([])
   const [view,setView]=useState(null)
   useEffect(()=>{load()},[])
   async function load(){
     const {data}=await supabase.from('documents').select('*, customers(*)').eq('business_id',business.id).order('created_at',{ascending:false})
-    setDocs(data||[])
+    const loaded=data||[]
+    setDocs(loaded)
+    if(initialDocumentId){
+      const requested=loaded.find(d=>d.id===initialDocumentId)
+      if(requested) setView(requested)
+      onDocumentOpened?.()
+    }
   }
   if(view) return <DocumentView doc={view} business={business} onBack={()=>setView(null)} onChanged={load}/>
   return <section><Header title="Quotes & Invoices" subtitle="All customer billing documents."/>
