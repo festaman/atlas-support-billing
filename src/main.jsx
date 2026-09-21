@@ -2,13 +2,144 @@ import React, { useEffect, useMemo, useState } from 'react'
 import { createRoot } from 'react-dom/client'
 import {
   LayoutDashboard, Users, UserCog, FileText, Settings, Plus, LogOut,
-  Trash2, Printer, Save, ChevronLeft, ReceiptText
+  Trash2, Printer, Save, ChevronLeft, ReceiptText, Mail, Send, Link2, Unlink
 } from 'lucide-react'
+import { PDFDocument, StandardFonts, rgb } from 'pdf-lib'
 import { supabase } from './supabase'
 import './styles.css'
 
 const money = (v) => new Intl.NumberFormat('en-US', {style:'currency', currency:'USD'}).format(Number(v || 0))
 const today = () => new Date().toISOString().slice(0,10)
+
+
+const formatDate = (v) => v ? new Date(`${v}T12:00:00`).toLocaleDateString('en-US') : ''
+const templateValue = (v) => (v === null || v === undefined ? '' : String(v))
+function renderEmailTemplate(template, doc, business, customer) {
+  const values = {
+    business_name: business?.name || 'Atlas Support',
+    customer_name: customer?.name || '',
+    contact_name: customer?.contact_name || customer?.name || '',
+    document_number: doc?.document_number || '',
+    document_type: doc?.document_type === 'quote' ? 'Quote' : 'Invoice',
+    total: money(doc?.total_amount),
+    due_date: doc?.due_date ? formatDate(doc.due_date) : '',
+    valid_until: doc?.valid_until ? formatDate(doc.valid_until) : '',
+    issue_date: doc?.issue_date ? formatDate(doc.issue_date) : '',
+  }
+  return String(template || '').replace(/\{([a-z_]+)\}/g, (_m,key)=>templateValue(values[key] ?? ''))
+}
+
+function bytesToBase64(bytes) {
+  let binary=''
+  const chunk=0x8000
+  for(let i=0;i<bytes.length;i+=chunk) binary += String.fromCharCode(...bytes.subarray(i,i+chunk))
+  return btoa(binary)
+}
+
+function wrapPdfText(text, font, size, maxWidth) {
+  const words=String(text||'').split(/\s+/).filter(Boolean)
+  const lines=[]
+  let line=''
+  for(const word of words){
+    const test=line?`${line} ${word}`:word
+    if(font.widthOfTextAtSize(test,size)<=maxWidth) line=test
+    else { if(line) lines.push(line); line=word }
+  }
+  if(line) lines.push(line)
+  return lines.length?lines:['']
+}
+
+async function createDocumentPdf(doc,items,business,customer){
+  const pdf=await PDFDocument.create()
+  const regular=await pdf.embedFont(StandardFonts.Helvetica)
+  const bold=await pdf.embedFont(StandardFonts.HelveticaBold)
+  let logo=null
+  try{
+    const logoBytes=await fetch('/atlas-support-logo.png').then(r=>r.arrayBuffer())
+    logo=await pdf.embedPng(logoBytes)
+  }catch{}
+
+  const W=612,H=792,M=48
+  let page,y
+  const addPage=()=>{page=pdf.addPage([W,H]);y=H-M;return page}
+  const text=(t,x,yy,size=10,font=regular,opts={})=>page.drawText(String(t??''),{x,y:yy,size,font,color:opts.color||rgb(0.1,0.1,0.1),maxWidth:opts.maxWidth})
+  const line=(x1,y1,x2,y2,w=1)=>page.drawLine({start:{x:x1,y:y1},end:{x:x2,y:y2},thickness:w,color:rgb(0.15,0.15,0.15)})
+  const ensure=(need)=>{if(y-need<M){addPage();drawHeader(false)}}
+  const drawHeader=(full=true)=>{
+    if(full&&logo){
+      const dims=logo.scale(1)
+      const scale=Math.min(240/dims.width,58/dims.height)
+      page.drawImage(logo,{x:M,y:H-M-55,width:dims.width*scale,height:dims.height*scale})
+    } else if(!full){ text(business?.name||'Atlas Support',M,H-M-18,12,bold) }
+    const title=doc.is_master_invoice?'MASTER BILL':doc.document_type.toUpperCase()
+    text(title,W-M-150,H-M-8,19,bold)
+    text(doc.document_number,W-M-150,H-M-27,11,bold)
+    text(`Date: ${formatDate(doc.issue_date)}`,W-M-150,H-M-43,9)
+    if(doc.due_date) text(`Due: ${formatDate(doc.due_date)}`,W-M-150,H-M-57,9)
+    if(doc.valid_until) text(`Valid until: ${formatDate(doc.valid_until)}`,W-M-150,H-M-57,9)
+    y=H-M-82
+    line(M,y,W-M,y,2)
+    y-=22
+  }
+
+  addPage();drawHeader(true)
+  text('FROM',M,y,8,bold,{color:rgb(.4,.4,.4)});text('BILL TO',W/2+10,y,8,bold,{color:rgb(.4,.4,.4)});y-=16
+  const from=[business?.name,business?.address_line1,business?.address_line2,[business?.city,business?.state,business?.postal_code].filter(Boolean).join(' '),business?.phone,business?.email].filter(Boolean)
+  const to=[customer?.name,customer?.contact_name,customer?.billing_address_line1,customer?.billing_address_line2,[customer?.billing_city,customer?.billing_state,customer?.billing_postal_code].filter(Boolean).join(' '),customer?.email].filter(Boolean)
+  const partyRows=Math.max(from.length,to.length)
+  for(let i=0;i<partyRows;i++){
+    if(from[i]) text(from[i],M,y-i*13,9,i===0?bold:regular)
+    if(to[i]) text(to[i],W/2+10,y-i*13,9,i===0?bold:regular)
+  }
+  y-=Math.max(64,partyRows*13+16)
+
+  const cols={desc:M,qty:358,rate:420,amount:505}
+  page.drawRectangle({x:M,y:y-20,width:W-2*M,height:22,color:rgb(.08,.08,.08)})
+  text('Description',cols.desc+5,y-14,8,bold,{color:rgb(1,1,1)})
+  text('Qty/Hrs',cols.qty,y-14,8,bold,{color:rgb(1,1,1)})
+  text('Rate',cols.rate,y-14,8,bold,{color:rgb(1,1,1)})
+  text('Amount',cols.amount,y-14,8,bold,{color:rgb(1,1,1)})
+  y-=30
+  for(const item of items||[]){
+    const descLines=wrapPdfText(item.description,regular,9,285)
+    const rowH=Math.max(24,descLines.length*12+8)
+    ensure(rowH+8)
+    descLines.forEach((l,idx)=>text(l,cols.desc+5,y-10-idx*12,9))
+    text(item.quantity,cols.qty,y-10,9)
+    text(money(item.unit_price),cols.rate,y-10,9)
+    text(money(item.line_total),cols.amount,y-10,9)
+    line(M,y-rowH,W-M,y-rowH,.4)
+    y-=rowH
+  }
+  y-=16
+  ensure(150)
+  const totalsX=405
+  text('Subtotal',totalsX,y,9);text(money(doc.subtotal),515,y,9,bold);y-=17
+  if(Number(doc.tax_amount)>0){text('Tax',totalsX,y,9);text(money(doc.tax_amount),515,y,9,bold);y-=17}
+  if(Number(doc.discount_amount)>0){text('Discount',totalsX,y,9);text(`-${money(doc.discount_amount)}`,515,y,9,bold);y-=17}
+  line(totalsX,y+5,W-M,y+5,1.5)
+  text('Total',totalsX,y-12,12,bold);text(money(doc.total_amount),510,y-12,12,bold)
+
+  let notesY=y-12
+  if(doc.notes){
+    text('NOTES',M,notesY,8,bold,{color:rgb(.4,.4,.4)});notesY-=14
+    for(const l of wrapPdfText(doc.notes,regular,9,300)){text(l,M,notesY,9);notesY-=12}
+  }
+  if(doc.payment_instructions){
+    notesY-=8;text('PAYMENT',M,notesY,8,bold,{color:rgb(.4,.4,.4)});notesY-=14
+    for(const l of wrapPdfText(doc.payment_instructions,regular,9,300)){text(l,M,notesY,9);notesY-=12}
+  }
+  return await pdf.save()
+}
+
+async function edgeErrorMessage(error,fallback='Something went wrong.'){
+  if(!error) return fallback
+  try{
+    const response=error.context
+    if(response?.clone){const body=await response.clone().json();if(body?.error)return body.error}
+  }catch{}
+  return error.message||fallback
+}
 
 function App() {
   const [session, setSession] = useState(null)
@@ -18,6 +149,7 @@ function App() {
   const [memberRole, setMemberRole] = useState(null)
   const [page, setPage] = useState('dashboard')
   const [documentToOpen, setDocumentToOpen] = useState(null)
+  const [oauthProcessed, setOauthProcessed] = useState(false)
 
   useEffect(() => {
     supabase.auth.getSession().then(({data}) => {
@@ -38,6 +170,28 @@ function App() {
       setMembershipChecked(false)
     }
   }, [session])
+
+  useEffect(() => {
+    if (!session?.user || !business?.id || oauthProcessed) return
+    const params = new URLSearchParams(window.location.search)
+    const code = params.get('code')
+    const state = params.get('state')
+    if (!code || !state) return
+    setOauthProcessed(true)
+    setPage('settings')
+    ;(async()=>{
+      const { data, error } = await supabase.functions.invoke('google-workspace-email', {
+        body:{action:'exchange_code',business_id:business.id,code,state}
+      })
+      window.history.replaceState({}, document.title, window.location.pathname)
+      if(error || data?.error){
+        alert(await edgeErrorMessage(error,data?.error||'Google Workspace connection failed.'))
+        return
+      }
+      alert(`Google Workspace connected: ${data.google_email}`)
+      await loadBusiness()
+    })()
+  }, [session?.user?.id,business?.id,oauthProcessed])
 
   async function getMembership() {
     return await supabase
@@ -104,7 +258,7 @@ function App() {
         {page === 'team' && <Team business={business} currentRole={memberRole} />}
         {page === 'new-invoice' && <DocumentEditor business={business} type="invoice" onClose={()=>setPage('documents')} />}
         {page === 'new-quote' && <DocumentEditor business={business} type="quote" onClose={()=>setPage('documents')} />}
-        {page === 'settings' && <BusinessSettings business={business} onSaved={loadBusiness} />}
+        {page === 'settings' && <BusinessSettings business={business} currentRole={memberRole} onSaved={loadBusiness} />}
       </main>
     </div>
   )
@@ -530,21 +684,34 @@ function DocumentView({doc,business,onBack,onChanged}) {
   const [status,setStatus]=useState(doc.status)
   const [convertedInvoice,setConvertedInvoice]=useState(null)
   const [converting,setConverting]=useState(false)
+  const [emailHistory,setEmailHistory]=useState([])
+  const [emailConnection,setEmailConnection]=useState({connected:false,google_email:null})
+  const [showEmail,setShowEmail]=useState(false)
+  const [emailSending,setEmailSending]=useState(false)
 
-  useEffect(()=>{loadDocumentDetails()},[doc.id])
+  useEffect(()=>{setStatus(doc.status);loadDocumentDetails()},[doc.id])
 
   async function loadDocumentDetails(){
     const itemReq=supabase.from('document_items').select('*').eq('document_id',doc.id).order('sort_order')
+    const extras=[
+      supabase.from('document_email_log').select('id,to_email,cc_email,subject,sender_email,status,error_message,sent_at').eq('document_id',doc.id).order('sent_at',{ascending:false}).limit(20),
+      supabase.rpc('google_workspace_connection_status',{p_business_id:business.id})
+    ]
     if(doc.document_type==='quote'){
-      const [{data:itemData},{data:converted}]=await Promise.all([
+      const [{data:itemData},{data:converted},{data:logs},{data:connection}]=await Promise.all([
         itemReq,
-        supabase.from('documents').select('id,document_number,status,total_amount').eq('converted_from_document_id',doc.id).eq('document_type','invoice').maybeSingle()
+        supabase.from('documents').select('id,document_number,status,total_amount').eq('converted_from_document_id',doc.id).eq('document_type','invoice').maybeSingle(),
+        ...extras
       ])
       setItems(itemData||[])
       setConvertedInvoice(converted||null)
+      setEmailHistory(logs||[])
+      setEmailConnection(connection?.[0]||{connected:false,google_email:null})
     } else {
-      const {data}=await itemReq
-      setItems(data||[])
+      const [{data:itemData},{data:logs},{data:connection}]=await Promise.all([itemReq,...extras])
+      setItems(itemData||[])
+      setEmailHistory(logs||[])
+      setEmailConnection(connection?.[0]||{connected:false,google_email:null})
     }
   }
 
@@ -580,14 +747,16 @@ function DocumentView({doc,business,onBack,onChanged}) {
     }).select().single()
     if(error){setConverting(false);return alert(error.message)}
 
-    const rows=items.map((i,idx)=>({
-      document_id:newDoc.id,
-      item_type:i.item_type||null,
-      description:i.description,
-      quantity:Number(i.quantity)||0,
-      unit_price:Number(i.unit_price)||0,
-      sort_order:idx
-    }))
+    const rows=items.map((i,idx)=>(
+      {
+        document_id:newDoc.id,
+        item_type:i.item_type||null,
+        description:i.description,
+        quantity:Number(i.quantity)||0,
+        unit_price:Number(i.unit_price)||0,
+        sort_order:idx
+      }
+    ))
     if(rows.length){
       const {error:itemErr}=await supabase.from('document_items').insert(rows)
       if(itemErr){
@@ -602,12 +771,55 @@ function DocumentView({doc,business,onBack,onChanged}) {
     onChanged()
   }
 
+  function openEmail(){
+    if(!emailConnection?.connected){
+      alert('Google Workspace is not connected yet. Open Settings and connect the Workspace account you want to send from.')
+      return
+    }
+    setShowEmail(true)
+  }
+
+  async function sendDocumentEmail(values){
+    setEmailSending(true)
+    try{
+      let pdfBase64=null
+      if(values.attachPdf){
+        const pdfBytes=await createDocumentPdf(doc,items,business,doc.customers||{})
+        pdfBase64=bytesToBase64(pdfBytes)
+      }
+      const filename=`${doc.document_number || doc.document_type}.pdf`.replace(/[^a-zA-Z0-9_.-]/g,'_')
+      const {data,error}=await supabase.functions.invoke('google-workspace-email',{
+        body:{
+          action:'send',business_id:business.id,document_id:doc.id,
+          to:values.to,cc:values.cc,subject:values.subject,body:values.body,
+          pdf_base64:pdfBase64,filename
+        }
+      })
+      if(error || data?.error) throw new Error(await edgeErrorMessage(error,data?.error||'Email could not be sent.'))
+      if(status==='draft') setStatus('sent')
+      setShowEmail(false)
+      await loadDocumentDetails()
+      onChanged()
+      alert(`${doc.document_type==='quote'?'Quote':'Invoice'} emailed successfully from ${data.sender_email}.`)
+    }catch(err){
+      alert(err.message||String(err))
+      await loadDocumentDetails()
+    }finally{
+      setEmailSending(false)
+    }
+  }
+
   const c=doc.customers||{}
+  const lastSent=emailHistory.find(x=>x.status==='sent')
   return <section className="doc-page">
     <div className="doc-toolbar no-print"><button className="back" onClick={onBack}><ChevronLeft size={18}/>Back</button><div className="toolbar-right">
       {doc.document_type==='quote'&&status==='accepted'&&!convertedInvoice&&<button className="primary" onClick={convertToInvoice} disabled={converting}><ReceiptText size={18}/>{converting?'Converting…':'Convert to Invoice'}</button>}
       {doc.document_type==='quote'&&convertedInvoice&&<span className="converted-badge">Converted to {convertedInvoice.document_number}</span>}
-      <select value={status} onChange={e=>changeStatus(e.target.value)}><option>draft</option><option>sent</option>{doc.document_type==='quote'&&<option>accepted</option>}{doc.document_type==='quote'&&<option>declined</option>}{doc.document_type==='invoice'&&<option>paid</option>}<option>void</option></select><button className="primary" onClick={()=>window.print()}><Printer size={18}/>Print / PDF</button></div></div>
+      <button className="secondary" onClick={openEmail}><Mail size={18}/>{emailHistory.some(x=>x.status==='sent')?'Email / Resend':'Email'}</button>
+      <select value={status} onChange={e=>changeStatus(e.target.value)}><option>draft</option><option>sent</option>{doc.document_type==='quote'&&<option>accepted</option>}{doc.document_type==='quote'&&<option>declined</option>}{doc.document_type==='invoice'&&<option>paid</option>}<option>void</option></select>
+      <button className="primary" onClick={()=>window.print()}><Printer size={18}/>Print / PDF</button>
+    </div></div>
+    {lastSent&&<div className="email-last-sent no-print"><Mail size={16}/>Last emailed {new Date(lastSent.sent_at).toLocaleString()} to {lastSent.to_email}{lastSent.sender_email&&<> from {lastSent.sender_email}</>}</div>}
     <article className="invoice-sheet">
       <div className="invoice-top"><img src="/atlas-support-logo.png"/><div className="doc-meta"><h1>{doc.is_master_invoice?'MASTER BILL':doc.document_type.toUpperCase()}</h1><strong>{doc.document_number}</strong><span>Date: {doc.issue_date}</span>{doc.due_date&&<span>Due: {doc.due_date}</span>}{doc.valid_until&&<span>Valid until: {doc.valid_until}</span>}</div></div>
       {doc.document_type==='quote'&&convertedInvoice&&<div className="conversion-note">Accepted quote converted to invoice <strong>{convertedInvoice.document_number}</strong>.</div>}
@@ -620,7 +832,40 @@ function DocumentView({doc,business,onBack,onChanged}) {
       <div className="invoice-bottom"><div className="payment-block">{doc.notes&&<><h4>NOTES</h4><p>{doc.notes}</p></>}{doc.payment_instructions&&<><h4>PAYMENT</h4><p>{doc.payment_instructions}</p></>}</div>
         <div className="invoice-totals"><div><span>Subtotal</span><b>{money(doc.subtotal)}</b></div>{Number(doc.tax_amount)>0&&<div><span>Tax</span><b>{money(doc.tax_amount)}</b></div>}{Number(doc.discount_amount)>0&&<div><span>Discount</span><b>-{money(doc.discount_amount)}</b></div>}<div className="invoice-grand"><span>Total</span><b>{money(doc.total_amount)}</b></div></div></div>
     </article>
+    {emailHistory.length>0&&<div className="card email-history no-print">
+      <div className="card-title"><h3>Email history</h3><span className="muted">{emailHistory.length} attempt{emailHistory.length===1?'':'s'}</span></div>
+      <table><thead><tr><th>Date</th><th>To</th><th>Subject</th><th>Status</th></tr></thead><tbody>
+        {emailHistory.map(e=><tr key={e.id}><td>{new Date(e.sent_at).toLocaleString()}</td><td>{e.to_email}</td><td>{e.subject}</td><td><span className={`team-status ${e.status==='failed'?'email-failed':''}`}>{e.status}</span>{e.error_message&&<div className="email-error">{e.error_message}</div>}</td></tr>)}
+      </tbody></table>
+    </div>}
+    {showEmail&&<EmailDocumentModal doc={doc} business={business} customer={c} connection={emailConnection} sending={emailSending} onClose={()=>setShowEmail(false)} onSend={sendDocumentEmail}/>} 
   </section>
+}
+
+function EmailDocumentModal({doc,business,customer,connection,sending,onClose,onSend}){
+  const subjectTemplate=doc.document_type==='quote'
+    ? business.quote_email_subject_template
+    : business.invoice_email_subject_template
+  const bodyTemplate=doc.document_type==='quote'
+    ? business.quote_email_body_template
+    : business.invoice_email_body_template
+  const [to,setTo]=useState(customer.email||'')
+  const [cc,setCc]=useState(business.email_cc_self?connection.google_email||'':'')
+  const [subject,setSubject]=useState(renderEmailTemplate(subjectTemplate||`${doc.document_type==='quote'?'Quote':'Invoice'} {document_number} from {business_name}`,doc,business,customer))
+  const [body,setBody]=useState(renderEmailTemplate(bodyTemplate||'Hi {contact_name},\n\nAttached is {document_type} {document_number} for {total}.\n\nThank you,\n{business_name}',doc,business,customer))
+  const [attachPdf,setAttachPdf]=useState(true)
+  function submit(e){e.preventDefault();onSend({to:to.trim(),cc:cc.trim(),subject:subject.trim(),body,attachPdf})}
+  return <div className="modal-backdrop"><form className="modal email-modal" onSubmit={submit}>
+    <div className="modal-head"><div><h2>Email {doc.document_type==='quote'?'Quote':'Invoice'}</h2><span className="muted">Sending from {connection.google_email}</span></div><button type="button" onClick={onClose}>×</button></div>
+    <div className="grid2">
+      <label>To<input type="email" value={to} onChange={e=>setTo(e.target.value)} required/></label>
+      <label>CC<input value={cc} onChange={e=>setCc(e.target.value)} placeholder="Optional email address"/></label>
+      <label className="span2">Subject<input value={subject} onChange={e=>setSubject(e.target.value)} required/></label>
+      <label className="span2">Message<textarea rows="10" value={body} onChange={e=>setBody(e.target.value)} required/></label>
+    </div>
+    <label className="checkbox-row"><input type="checkbox" checked={attachPdf} onChange={e=>setAttachPdf(e.target.checked)}/><span>Attach PDF copy of {doc.document_number}</span></label>
+    <div className="modal-actions"><button type="button" className="secondary" onClick={onClose}>Cancel</button><button className="primary" disabled={sending}><Send size={18}/>{sending?'Sending…':'Send Email'}</button></div>
+  </form></div>
 }
 
 
@@ -773,29 +1018,101 @@ function Team({business,currentRole}) {
   </section>
 }
 
-function BusinessSettings({business,onSaved}) {
+function BusinessSettings({business,currentRole,onSaved}) {
   const [form,setForm]=useState({...business})
-  const change=(k,v)=>setForm({...form,[k]:v})
-  async function save(e){e.preventDefault();const fields=['name','email','phone','address_line1','address_line2','city','state','postal_code','payment_instructions','default_tax_rate','default_terms_days','invoice_prefix','quote_prefix'];const payload={};fields.forEach(k=>payload[k]=form[k]??null);const {error}=await supabase.from('businesses').update(payload).eq('id',business.id);if(error)alert(error.message);else{alert('Settings saved.');onSaved()}}
-  return <section><Header title="Settings" subtitle="Business details used on invoices and quotes."/>
-    <form className="card settings-form" onSubmit={save}>
-      <div className="settings-logo"><img src="/atlas-support-logo.png"/><span>Current invoice logo</span></div>
-      <div className="grid2">
-        <label>Business name<input value={form.name||''} onChange={e=>change('name',e.target.value)}/></label>
-        <label>Email<input value={form.email||''} onChange={e=>change('email',e.target.value)}/></label>
-        <label>Phone<input value={form.phone||''} onChange={e=>change('phone',e.target.value)}/></label>
-        <label>Address<input value={form.address_line1||''} onChange={e=>change('address_line1',e.target.value)}/></label>
-        <label>City<input value={form.city||''} onChange={e=>change('city',e.target.value)}/></label>
-        <label>State / ZIP<div className="inline"><input value={form.state||''} onChange={e=>change('state',e.target.value)}/><input value={form.postal_code||''} onChange={e=>change('postal_code',e.target.value)}/></div></label>
-        <label>Default tax rate (%)<input type="number" min="0" step="0.01" value={form.default_tax_rate||0} onChange={e=>change('default_tax_rate',e.target.value)}/></label>
-        <label>Invoice terms (days)<input type="number" min="0" value={form.default_terms_days||0} onChange={e=>change('default_terms_days',e.target.value)}/></label>
-        <label>Invoice prefix<input value={form.invoice_prefix||'INV'} onChange={e=>change('invoice_prefix',e.target.value)}/></label>
-        <label>Quote prefix<input value={form.quote_prefix||'Q'} onChange={e=>change('quote_prefix',e.target.value)}/></label>
-        <label className="span2">Payment instructions<textarea rows="5" value={form.payment_instructions||''} onChange={e=>change('payment_instructions',e.target.value)} placeholder="Checks payable to…, Zelle…, Venmo…, etc."/></label>
+  const [connection,setConnection]=useState({connected:false,google_email:null,connected_at:null})
+  const [connecting,setConnecting]=useState(false)
+  const [disconnecting,setDisconnecting]=useState(false)
+  const change=(k,v)=>setForm(f=>({...f,[k]:v}))
+  const canManageEmail=currentRole==='owner'||currentRole==='admin'
+
+  useEffect(()=>{loadConnection()},[business.id])
+
+  async function loadConnection(){
+    const {data,error}=await supabase.rpc('google_workspace_connection_status',{p_business_id:business.id})
+    if(!error) setConnection(data?.[0]||{connected:false,google_email:null,connected_at:null})
+  }
+
+  async function save(e){
+    e.preventDefault()
+    const fields=['name','email','phone','address_line1','address_line2','city','state','postal_code','payment_instructions','default_tax_rate','default_terms_days','invoice_prefix','quote_prefix','email_sender_name','email_cc_self','invoice_email_subject_template','invoice_email_body_template','quote_email_subject_template','quote_email_body_template']
+    const payload={};fields.forEach(k=>payload[k]=form[k]??null)
+    const {error}=await supabase.from('businesses').update(payload).eq('id',business.id)
+    if(error) alert(error.message)
+    else {alert('Settings saved.');onSaved()}
+  }
+
+  async function connectGoogle(){
+    setConnecting(true)
+    const {data,error}=await supabase.functions.invoke('google-workspace-email',{body:{action:'authorize',business_id:business.id}})
+    setConnecting(false)
+    if(error||data?.error){alert(await edgeErrorMessage(error,data?.error||'Could not start Google authorization.'));return}
+    if(data?.authorize_url) window.location.assign(data.authorize_url)
+  }
+
+  async function disconnectGoogle(){
+    if(!confirm(`Disconnect ${connection.google_email} from Atlas Support billing? Email sending will stop until another Workspace account is connected.`)) return
+    setDisconnecting(true)
+    const {data,error}=await supabase.functions.invoke('google-workspace-email',{body:{action:'disconnect',business_id:business.id}})
+    setDisconnecting(false)
+    if(error||data?.error){alert(await edgeErrorMessage(error,data?.error||'Could not disconnect Google Workspace.'));return}
+    await loadConnection()
+  }
+
+  return <section><Header title="Settings" subtitle="Business details, email delivery and customer-message templates."/>
+    <form className="settings-stack" onSubmit={save}>
+      <div className="card settings-form">
+        <div className="settings-logo"><img src="/atlas-support-logo.png"/><span>Current invoice logo</span></div>
+        <div className="grid2">
+          <label>Business name<input value={form.name||''} onChange={e=>change('name',e.target.value)}/></label>
+          <label>Business email<input value={form.email||''} onChange={e=>change('email',e.target.value)}/></label>
+          <label>Phone<input value={form.phone||''} onChange={e=>change('phone',e.target.value)}/></label>
+          <label>Address<input value={form.address_line1||''} onChange={e=>change('address_line1',e.target.value)}/></label>
+          <label>City<input value={form.city||''} onChange={e=>change('city',e.target.value)}/></label>
+          <label>State / ZIP<div className="inline"><input value={form.state||''} onChange={e=>change('state',e.target.value)}/><input value={form.postal_code||''} onChange={e=>change('postal_code',e.target.value)}/></div></label>
+          <label>Default tax rate (%)<input type="number" min="0" step="0.01" value={form.default_tax_rate||0} onChange={e=>change('default_tax_rate',e.target.value)}/></label>
+          <label>Invoice terms (days)<input type="number" min="0" value={form.default_terms_days||0} onChange={e=>change('default_terms_days',e.target.value)}/></label>
+          <label>Invoice prefix<input value={form.invoice_prefix||'INV'} onChange={e=>change('invoice_prefix',e.target.value)}/></label>
+          <label>Quote prefix<input value={form.quote_prefix||'Q'} onChange={e=>change('quote_prefix',e.target.value)}/></label>
+          <label className="span2">Payment instructions<textarea rows="5" value={form.payment_instructions||''} onChange={e=>change('payment_instructions',e.target.value)} placeholder="Checks payable to…, Zelle…, Venmo…, etc."/></label>
+        </div>
       </div>
-      <button className="primary no-print"><Save size={18}/>Save Settings</button>
+
+      <div className="card email-settings-card">
+        <div className="card-title"><div><h3>Google Workspace email</h3><p className="muted">Quotes and invoices are sent through the connected Google Workspace mailbox.</p></div>
+          <span className={`team-status ${connection.connected?'':'pending'}`}>{connection.connected?'Connected':'Not connected'}</span>
+        </div>
+        {connection.connected?<div className="workspace-connection">
+          <div><strong>{connection.google_email}</strong><span>{connection.connected_at?`Connected ${new Date(connection.connected_at).toLocaleString()}`:'Connected'}</span></div>
+          {canManageEmail&&<button type="button" className="secondary" onClick={disconnectGoogle} disabled={disconnecting}><Unlink size={18}/>{disconnecting?'Disconnecting…':'Disconnect'}</button>}
+        </div>:<div className="workspace-connection">
+          <div><strong>No Workspace mailbox connected</strong><span>Connect the account you want Atlas Support to send from.</span></div>
+          {canManageEmail&&<button type="button" className="primary" onClick={connectGoogle} disabled={connecting}><Link2 size={18}/>{connecting?'Connecting…':'Connect Google Workspace'}</button>}
+        </div>}
+        {!canManageEmail&&<div className="notice">Only an Owner or Admin can change the connected Google Workspace account.</div>}
+        <div className="grid2 email-defaults">
+          <label>Sender display name<input value={form.email_sender_name||form.name||''} onChange={e=>change('email_sender_name',e.target.value)} placeholder="Atlas Support"/></label>
+          <label className="checkbox-setting"><span>Default copy</span><span className="checkbox-row"><input type="checkbox" checked={!!form.email_cc_self} onChange={e=>change('email_cc_self',e.target.checked)}/><span>CC the connected Workspace mailbox by default</span></span></label>
+        </div>
+      </div>
+
+      <div className="card email-template-card">
+        <div className="card-title"><div><h3>Invoice email template</h3><p className="muted">Used to prefill the email window. You can still edit each message before sending.</p></div></div>
+        <label>Subject<input value={form.invoice_email_subject_template||''} onChange={e=>change('invoice_email_subject_template',e.target.value)}/></label>
+        <label>Message<textarea rows="8" value={form.invoice_email_body_template||''} onChange={e=>change('invoice_email_body_template',e.target.value)}/></label>
+      </div>
+
+      <div className="card email-template-card">
+        <div className="card-title"><div><h3>Quote email template</h3><p className="muted">Used whenever you click Email on a quote.</p></div></div>
+        <label>Subject<input value={form.quote_email_subject_template||''} onChange={e=>change('quote_email_subject_template',e.target.value)}/></label>
+        <label>Message<textarea rows="8" value={form.quote_email_body_template||''} onChange={e=>change('quote_email_body_template',e.target.value)}/></label>
+      </div>
+
+      <div className="card template-help"><strong>Template fields</strong><p className="muted">Use any of these: <code>{'{business_name}'}</code> <code>{'{customer_name}'}</code> <code>{'{contact_name}'}</code> <code>{'{document_number}'}</code> <code>{'{document_type}'}</code> <code>{'{total}'}</code> <code>{'{issue_date}'}</code> <code>{'{due_date}'}</code> <code>{'{valid_until}'}</code>.</p></div>
+      <button className="primary no-print settings-save"><Save size={18}/>Save Settings</button>
     </form>
   </section>
 }
+
 
 createRoot(document.getElementById('root')).render(<App />)
