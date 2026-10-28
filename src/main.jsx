@@ -93,17 +93,20 @@ async function createDocumentPdf(doc,items,business,customer){
   }
   y-=Math.max(64,partyRows*13+16)
 
-  const cols={desc:M,qty:358,rate:420,amount:505}
+  const hasServiceDates=Boolean(doc.is_master_invoice)
+  const cols={date:M+5,desc:hasServiceDates?115:M,qty:358,rate:420,amount:505}
   page.drawRectangle({x:M,y:y-20,width:W-2*M,height:22,color:rgb(.08,.08,.08)})
+  if(hasServiceDates) text('Date',cols.date,y-14,8,bold,{color:rgb(1,1,1)})
   text('Description',cols.desc+5,y-14,8,bold,{color:rgb(1,1,1)})
   text('Qty/Hrs',cols.qty,y-14,8,bold,{color:rgb(1,1,1)})
   text('Rate',cols.rate,y-14,8,bold,{color:rgb(1,1,1)})
   text('Amount',cols.amount,y-14,8,bold,{color:rgb(1,1,1)})
   y-=30
   for(const item of items||[]){
-    const descLines=wrapPdfText(item.description,regular,9,285)
+    const descLines=wrapPdfText(item.description,regular,9,hasServiceDates?226:285)
     const rowH=Math.max(24,descLines.length*12+8)
     ensure(rowH+8)
+    if(hasServiceDates) text(formatDate(item.service_date||doc.issue_date),cols.date,y-10,8)
     descLines.forEach((l,idx)=>text(l,cols.desc+5,y-10-idx*12,9))
     text(item.quantity,cols.qty,y-10,9)
     text(money(item.unit_price),cols.rate,y-10,9)
@@ -495,13 +498,14 @@ function CustomerDetails({business,customer,onBack,onSaved}) {
   const [edit,setEdit]=useState(false)
   const [docs,setDocs]=useState([])
   const [consolidating,setConsolidating]=useState(false)
+  const [undoing,setUndoing]=useState(false)
   const [message,setMessage]=useState('')
   useEffect(()=>{load()},[customer.id])
 
   async function load(){
     const [{data:c},{data:d}] = await Promise.all([
       supabase.from('customers').select('*').eq('id',customer.id).single(),
-      supabase.from('documents').select('id,document_number,document_type,issue_date,status,total_amount,is_master_invoice').eq('customer_id',customer.id).order('created_at',{ascending:false})
+      supabase.from('documents').select('id,document_number,document_type,issue_date,status,total_amount,is_master_invoice,master_undone_at').eq('customer_id',customer.id).order('created_at',{ascending:false})
     ])
     if(c){setCurrent(c);onSaved?.(c)}
     setDocs(d||[])
@@ -511,17 +515,28 @@ function CustomerDetails({business,customer,onBack,onSaved}) {
   const quotes=docs.filter(d=>d.document_type==='quote')
   const paidInvoices=docs.filter(d=>d.document_type==='invoice'&&d.status==='paid')
   const outstanding=openInvoices.reduce((a,d)=>a+Number(d.total_amount||0),0)
+  const undoableMasters=openInvoices.filter(d=>d.is_master_invoice)
+
+  async function undoMasterBill(master){
+    if(!confirm(`Undo master bill ${master.document_number}? This restores the original invoices and marks the master bill VOID. It will remain in the audit history, and previously sent emails cannot be recalled.`)) return
+    setUndoing(true);setMessage('')
+    const {data:count,error}=await supabase.rpc('undo_master_invoice',{p_master_invoice_id:master.id})
+    setUndoing(false)
+    if(error) return alert(error.message)
+    setMessage(`Master bill ${master.document_number} undone. ${count} original invoice(s) restored.`)
+    await load()
+  }
 
   async function createMasterBill(){
     if(!openInvoices.length) return
     const list=openInvoices.map(d=>d.document_number).join(', ')
-    if(!confirm(`Create one master bill for ${current.name} from ${openInvoices.length} unpaid invoice${openInvoices.length===1?'':'s'} (${money(outstanding)})?\n\nThis will permanently delete the original invoice records after their numbers, totals, and line-item details are saved inside the new master bill.\n\nInvoices: ${list}`)) return
+    if(!confirm(`Create one master bill for ${current.name} from ${openInvoices.length} unpaid invoice${openInvoices.length===1?'':'s'} (${money(outstanding)})?\n\nEach original line item will appear on its own dated row. Original invoices will be archived for Undo and replaced with the master bill.\n\nInvoices: ${list}`)) return
     setConsolidating(true); setMessage('')
     const {data:invoiceId,error}=await supabase.rpc('consolidate_unpaid_invoices',{p_customer_id:current.id})
     setConsolidating(false)
     if(error) return alert(error.message)
     const {data:invoice}=await supabase.from('documents').select('document_number,total_amount').eq('id',invoiceId).single()
-    setMessage(`${invoice?.document_number||'Master bill'} created${invoice?.total_amount!=null?` for ${money(invoice.total_amount)}`:''}. The previous unpaid invoices were consolidated and deleted.`)
+    setMessage(`${invoice?.document_number||'Master bill'} created${invoice?.total_amount!=null?` for ${money(invoice.total_amount)}`:''}. Each original line item is preserved; you can undo the master bill.`)
     await load()
   }
 
@@ -553,10 +568,11 @@ function CustomerDetails({business,customer,onBack,onSaved}) {
         {current.notes&&<div className="customer-notes"><h4>Notes</h4><p>{current.notes}</p></div>}
       </div>
       <div className="card"><div className="card-title"><h3>Master billing</h3></div>
-        <p className="muted">When you are ready to bill this customer, create one master bill from every unpaid invoice. The original unpaid invoices are then removed and replaced by the new master bill.</p>
+        <p className="muted">Combine unpaid invoices into one bill with individually dated labor and material lines. Undo restores the original invoices.</p>
         <div className="sumrow"><span>Invoices waiting</span><strong>{openInvoices.length}</strong></div>
         <div className="sumrow"><span>Combined balance</span><strong>{money(outstanding)}</strong></div>
-        {openInvoices.length>0?<button className="primary wide no-print" onClick={createMasterBill} disabled={consolidating}><ReceiptText size={17}/>{consolidating?'Consolidating…':'Create Master Bill'}</button>:<Empty text="No unpaid invoices to consolidate."/>}
+        {openInvoices.length>0?<button className="primary wide no-print" onClick={createMasterBill} disabled={consolidating||undoing}><ReceiptText size={17}/>{consolidating?'Consolidating…':'Create Master Bill'}</button>:<Empty text="No unpaid invoices to consolidate."/>}
+        {undoableMasters.map(m=><button key={m.id} className="secondary wide master-undo-action no-print" onClick={()=>undoMasterBill(m)} disabled={undoing||consolidating}>Undo {m.document_number}</button>)}
       </div>
     </div>
 
@@ -611,14 +627,14 @@ function DocumentEditor({business,type,onClose}) {
   const [discount,setDiscount]=useState(0)
   const [notes,setNotes]=useState('')
   const [payment,setPayment]=useState(business.payment_instructions||'')
-  const [items,setItems]=useState([{description:'',quantity:1,unit_price:0,item_type:null}])
+  const [items,setItems]=useState([{description:'',service_date:'',quantity:1,unit_price:0,item_type:null}])
   const [saving,setSaving]=useState(false)
   useEffect(()=>{supabase.from('customers').select('*').eq('business_id',business.id).order('name').then(({data})=>setCustomers(data||[]))},[])
   const subtotal=useMemo(()=>items.reduce((a,i)=>a+(Number(i.quantity)||0)*(Number(i.unit_price)||0),0),[items])
   const tax=subtotal*(Number(taxRate)||0)/100
   const total=Math.max(0,subtotal+tax-(Number(discount)||0))
   function setItem(i,k,v){setItems(items.map((x,idx)=>idx===i?{...x,[k]:v}:x))}
-  function addItem(){setItems([...items,{description:'',quantity:1,unit_price:0,item_type:null}])}
+  function addItem(){setItems([...items,{description:'',service_date:'',quantity:1,unit_price:0,item_type:null}])}
   function removeItem(i){setItems(items.filter((_,idx)=>idx!==i))}
   async function save(){
     if(!customerId) return alert('Choose a customer.')
@@ -637,7 +653,8 @@ function DocumentEditor({business,type,onClose}) {
     if(error){setSaving(false);return alert(error.message)}
     const rows=items.filter(i=>i.description.trim()).map((i,idx)=>({
       document_id:doc.id, item_type:i.item_type||null, description:i.description,
-      quantity:Number(i.quantity)||0, unit_price:Number(i.unit_price)||0, sort_order:idx
+      quantity:Number(i.quantity)||0, unit_price:Number(i.unit_price)||0, sort_order:idx,
+      service_date:i.service_date||date
     }))
     const {error:itemErr}=await supabase.from('document_items').insert(rows)
     setSaving(false)
@@ -654,7 +671,10 @@ function DocumentEditor({business,type,onClose}) {
         <h3>Line items</h3>
         <div className="line-head"><span>Description</span><span>Qty / Hrs</span><span>Rate / Price</span><span>Amount</span><span></span></div>
         {items.map((i,idx)=><div className="line-row" key={idx}>
-          <input placeholder="Labor, material, service…" value={i.description} onChange={e=>setItem(idx,'description',e.target.value)}/>
+          <div className="line-description-cell">
+            <input placeholder="Labor, material, service…" value={i.description} onChange={e=>setItem(idx,'description',e.target.value)}/>
+            <label className="line-date-field"><span>Service date</span><input type="date" value={i.service_date||date} onChange={e=>setItem(idx,'service_date',e.target.value)}/></label>
+          </div>
           <input type="number" min="0" step="0.01" value={i.quantity} onChange={e=>setItem(idx,'quantity',e.target.value)}/>
           <input type="number" min="0" step="0.01" value={i.unit_price} onChange={e=>setItem(idx,'unit_price',e.target.value)}/>
           <div className="line-total">{money((Number(i.quantity)||0)*(Number(i.unit_price)||0))}</div>
@@ -688,6 +708,7 @@ function DocumentView({doc,business,onBack,onChanged}) {
   const [emailConnection,setEmailConnection]=useState({connected:false,google_email:null})
   const [showEmail,setShowEmail]=useState(false)
   const [emailSending,setEmailSending]=useState(false)
+  const [undoingMaster,setUndoingMaster]=useState(false)
 
   useEffect(()=>{setStatus(doc.status);loadDocumentDetails()},[doc.id])
 
@@ -754,7 +775,8 @@ function DocumentView({doc,business,onBack,onChanged}) {
         description:i.description,
         quantity:Number(i.quantity)||0,
         unit_price:Number(i.unit_price)||0,
-        sort_order:idx
+        sort_order:idx,
+        service_date:i.service_date||null
       }
     ))
     if(rows.length){
@@ -769,6 +791,23 @@ function DocumentView({doc,business,onBack,onChanged}) {
     setConvertedInvoice(finished||newDoc)
     setConverting(false)
     onChanged()
+  }
+
+  async function undoMaster(){
+    if(!doc.is_master_invoice || ['paid','void'].includes(status) || doc.master_undone_at) return
+    if(!confirm(`Undo master bill ${doc.document_number}?\n\nThis restores its original invoices and marks the master bill VOID. The void copy stays in the audit history.\n\nIMPORTANT: Any previously sent email cannot be recalled.`)) return
+    setUndoingMaster(true)
+    try{
+      const {data:count,error}=await supabase.rpc('undo_master_invoice',{p_master_invoice_id:doc.id})
+      if(error) throw error
+      await onChanged()
+      alert(`Master bill undone. ${count} original invoice(s) restored.`)
+      onBack()
+    }catch(err){
+      alert(err.message||String(err))
+    }finally{
+      setUndoingMaster(false)
+    }
   }
 
   function openEmail(){
@@ -815,20 +854,22 @@ function DocumentView({doc,business,onBack,onChanged}) {
     <div className="doc-toolbar no-print"><button className="back" onClick={onBack}><ChevronLeft size={18}/>Back</button><div className="toolbar-right">
       {doc.document_type==='quote'&&status==='accepted'&&!convertedInvoice&&<button className="primary" onClick={convertToInvoice} disabled={converting}><ReceiptText size={18}/>{converting?'Converting…':'Convert to Invoice'}</button>}
       {doc.document_type==='quote'&&convertedInvoice&&<span className="converted-badge">Converted to {convertedInvoice.document_number}</span>}
-      <button className="secondary" onClick={openEmail}><Mail size={18}/>{emailHistory.some(x=>x.status==='sent')?'Email / Resend':'Email'}</button>
-      <select value={status} onChange={e=>changeStatus(e.target.value)}><option>draft</option><option>sent</option>{doc.document_type==='quote'&&<option>accepted</option>}{doc.document_type==='quote'&&<option>declined</option>}{doc.document_type==='invoice'&&<option>paid</option>}<option>void</option></select>
+      {doc.is_master_invoice&&!['paid','void'].includes(status)&&!doc.master_undone_at&&<button className="secondary" onClick={undoMaster} disabled={undoingMaster}><ChevronLeft size={18}/>{undoingMaster?'Restoring…':'Undo Master Bill'}</button>}
+      {!doc.master_undone_at&&<button className="secondary" onClick={openEmail}><Mail size={18}/>{emailHistory.some(x=>x.status==='sent')?'Email / Resend':'Email'}</button>}
+      <select value={doc.master_undone_at?'void':status} onChange={e=>changeStatus(e.target.value)} disabled={Boolean(doc.master_undone_at)}><option>draft</option><option>sent</option>{doc.document_type==='quote'&&<option>accepted</option>}{doc.document_type==='quote'&&<option>declined</option>}{doc.document_type==='invoice'&&<option>paid</option>}<option>void</option></select>
       <button className="primary" onClick={()=>window.print()}><Printer size={18}/>Print / PDF</button>
     </div></div>
     {lastSent&&<div className="email-last-sent no-print"><Mail size={16}/>Last emailed {new Date(lastSent.sent_at).toLocaleString()} to {lastSent.to_email}{lastSent.sender_email&&<> from {lastSent.sender_email}</>}</div>}
     <article className="invoice-sheet">
       <div className="invoice-top"><img src="/atlas-support-logo.png"/><div className="doc-meta"><h1>{doc.is_master_invoice?'MASTER BILL':doc.document_type.toUpperCase()}</h1><strong>{doc.document_number}</strong><span>Date: {doc.issue_date}</span>{doc.due_date&&<span>Due: {doc.due_date}</span>}{doc.valid_until&&<span>Valid until: {doc.valid_until}</span>}</div></div>
+      {doc.master_undone_at&&<div className="conversion-note">Master bill undone: the original invoices were restored and this copy is void.</div>}
       {doc.document_type==='quote'&&convertedInvoice&&<div className="conversion-note">Accepted quote converted to invoice <strong>{convertedInvoice.document_number}</strong>.</div>}
       <div className="invoice-parties">
         <div><h4>FROM</h4><strong>{business.name}</strong>{business.address_line1&&<span>{business.address_line1}</span>}{business.city&&<span>{business.city}, {business.state} {business.postal_code}</span>}{business.phone&&<span>{business.phone}</span>}{business.email&&<span>{business.email}</span>}</div>
         <div><h4>BILL TO</h4><strong>{c.name}</strong>{c.contact_name&&<span>{c.contact_name}</span>}{c.billing_address_line1&&<span>{c.billing_address_line1}</span>}{c.billing_city&&<span>{c.billing_city}, {c.billing_state} {c.billing_postal_code}</span>}{c.email&&<span>{c.email}</span>}</div>
       </div>
-      <table className="invoice-table"><thead><tr><th>Description</th><th className="right">Qty/Hrs</th><th className="right">Rate/Price</th><th className="right">Amount</th></tr></thead>
-        <tbody>{items.map(i=><tr key={i.id}><td>{i.description}</td><td className="right">{i.quantity}</td><td className="right">{money(i.unit_price)}</td><td className="right">{money(i.line_total)}</td></tr>)}</tbody></table>
+      <table className="invoice-table"><thead><tr>{doc.is_master_invoice&&<th>Date</th>}<th>Description</th><th className="right">Qty/Hrs</th><th className="right">Rate/Price</th><th className="right">Amount</th></tr></thead>
+        <tbody>{items.map(i=><tr key={i.id}>{doc.is_master_invoice&&<td className="service-date">{formatDate(i.service_date||doc.issue_date)}</td>}<td>{i.description}</td><td className="right">{i.quantity}</td><td className="right">{money(i.unit_price)}</td><td className="right">{money(i.line_total)}</td></tr>)}</tbody></table>
       <div className="invoice-bottom"><div className="payment-block">{doc.notes&&<><h4>NOTES</h4><p>{doc.notes}</p></>}{doc.payment_instructions&&<><h4>PAYMENT</h4><p>{doc.payment_instructions}</p></>}</div>
         <div className="invoice-totals"><div><span>Subtotal</span><b>{money(doc.subtotal)}</b></div>{Number(doc.tax_amount)>0&&<div><span>Tax</span><b>{money(doc.tax_amount)}</b></div>}{Number(doc.discount_amount)>0&&<div><span>Discount</span><b>-{money(doc.discount_amount)}</b></div>}<div className="invoice-grand"><span>Total</span><b>{money(doc.total_amount)}</b></div></div></div>
     </article>
