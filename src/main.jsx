@@ -518,12 +518,12 @@ function CustomerDetails({business,customer,onBack,onSaved,onOpenDocument}) {
   const undoableMasters=openInvoices.filter(d=>d.is_master_invoice)
 
   async function undoMasterBill(master){
-    if(!confirm(`Undo master bill ${master.document_number}? This restores the original invoices and marks the master bill VOID. It will remain in the audit history, and previously sent emails cannot be recalled.`)) return
+    if(!confirm(`Undo master bill ${master.document_number}? This restores the original invoices and permanently deletes the master bill. Its line items disappear, but any email-send history is retained. Previously sent emails cannot be recalled.`)) return
     setUndoing(true);setMessage('')
     const {data:count,error}=await supabase.rpc('undo_master_invoice',{p_master_invoice_id:master.id})
     setUndoing(false)
     if(error) return alert(error.message)
-    setMessage(`Master bill ${master.document_number} undone. ${count} original invoice(s) restored.`)
+    setMessage(`Master bill ${master.document_number} deleted. ${count} original invoice(s) restored.`)
     await load()
   }
 
@@ -811,13 +811,13 @@ function DocumentView({doc,business,onBack,onChanged}) {
 
   async function undoMaster(){
     if(!doc.is_master_invoice || ['paid','void'].includes(status) || doc.master_undone_at) return
-    if(!confirm(`Undo master bill ${doc.document_number}?\n\nThis restores its original invoices and marks the master bill VOID. The void copy stays in the audit history.\n\nIMPORTANT: Any previously sent email cannot be recalled.`)) return
+    if(!confirm(`Undo master bill ${doc.document_number}?\n\nThis restores its original invoices and permanently deletes the master bill. Email-send history is retained, but the master bill itself is removed.\n\nIMPORTANT: Any previously sent email cannot be recalled.`)) return
     setUndoingMaster(true)
     try{
       const {data:count,error}=await supabase.rpc('undo_master_invoice',{p_master_invoice_id:doc.id})
       if(error) throw error
       await onChanged()
-      alert(`Master bill undone. ${count} original invoice(s) restored.`)
+      alert(`Master bill deleted. ${count} original invoice(s) restored.`)
       onBack()
     }catch(err){
       alert(err.message||String(err))
