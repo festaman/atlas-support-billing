@@ -256,7 +256,7 @@ function App() {
       <Sidebar page={page} setPage={setPage} business={business} role={memberRole} />
       <main className="main">
         {page === 'dashboard' && <Dashboard business={business} setPage={setPage} onOpenDocument={(id)=>{setDocumentToOpen(id);setPage('documents')}} />}
-        {page === 'customers' && <Customers business={business} />}
+        {page === 'customers' && <Customers business={business} onOpenDocument={(id)=>{setDocumentToOpen(id);setPage('documents')}} />}
         {page === 'documents' && <Documents business={business} initialDocumentId={documentToOpen} onDocumentOpened={()=>setDocumentToOpen(null)} />}
         {page === 'team' && <Team business={business} currentRole={memberRole} />}
         {page === 'new-invoice' && <DocumentEditor business={business} type="invoice" onClose={()=>setPage('documents')} />}
@@ -424,7 +424,7 @@ function Stat({label,value}){return <div className="stat"><span>{label}</span><s
 function Header({title,subtitle}){return <header className="page-header"><div><h1>{title}</h1>{subtitle&&<p>{subtitle}</p>}</div></header>}
 function Empty({text}){return <div className="empty">{text}</div>}
 
-function Customers({business}) {
+function Customers({business,onOpenDocument}) {
   const [customers,setCustomers] = useState([])
   const [show,setShow]=useState(false)
   const [selected,setSelected]=useState(null)
@@ -437,7 +437,7 @@ function Customers({business}) {
       if(fresh) setSelected(fresh)
     }
   }
-  if(selected) return <CustomerDetails business={business} customer={selected} onBack={()=>setSelected(null)} onSaved={async(c)=>{setSelected(c);await load()}} />
+  if(selected) return <CustomerDetails business={business} customer={selected} onBack={()=>setSelected(null)} onSaved={async(c)=>{setSelected(c);await load()}} onOpenDocument={onOpenDocument} />
   return <section>
     <Header title="Customers" subtitle="Customer billing and service information."/>
     <button className="primary no-print" onClick={()=>setShow(true)}><Plus size={18}/>Add Customer</button>
@@ -493,7 +493,7 @@ function CustomerModal({business,onClose,onSaved,customer=null}) {
   </form></div>
 }
 
-function CustomerDetails({business,customer,onBack,onSaved}) {
+function CustomerDetails({business,customer,onBack,onSaved,onOpenDocument}) {
   const [current,setCurrent]=useState(customer)
   const [edit,setEdit]=useState(false)
   const [docs,setDocs]=useState([])
@@ -540,6 +540,22 @@ function CustomerDetails({business,customer,onBack,onSaved}) {
     await load()
   }
 
+  function documentRowActions(doc){
+    return {
+      className:'clickable',
+      role:'button',
+      tabIndex:0,
+      title:`Open ${doc.document_type} ${doc.document_number}`,
+      onClick:()=>onOpenDocument(doc.id),
+      onKeyDown:(e)=>{
+        if(e.key==='Enter'||e.key===' '){
+          e.preventDefault()
+          onOpenDocument(doc.id)
+        }
+      }
+    }
+  }
+
   const billingLabel=current.default_billing_frequency==='on_demand'?'On demand':current.default_billing_frequency
   return <section>
     <div className="customer-detail-head no-print">
@@ -577,13 +593,13 @@ function CustomerDetails({business,customer,onBack,onSaved}) {
     </div>
 
     <div className="card table-card"><div className="card-title customer-section-title"><h3>Open invoices</h3></div>
-      {openInvoices.length===0?<Empty text="No open invoices."/>:<table><thead><tr><th>Invoice</th><th>Date</th><th>Status</th><th className="right">Total</th></tr></thead><tbody>{openInvoices.map(d=><tr key={d.id}><td><strong>{d.document_number}</strong>{d.is_master_invoice&&<span className="pill master-pill">master</span>}</td><td>{d.issue_date}</td><td><span className="pill">{d.status}</span></td><td className="right">{money(d.total_amount)}</td></tr>)}</tbody></table>}
+      {openInvoices.length===0?<Empty text="No open invoices."/>:<table><thead><tr><th>Invoice</th><th>Date</th><th>Status</th><th className="right">Total</th></tr></thead><tbody>{openInvoices.map(d=><tr key={d.id} {...documentRowActions(d)}><td><strong>{d.document_number}</strong>{d.is_master_invoice&&<span className="pill master-pill">master</span>}</td><td>{d.issue_date}</td><td><span className="pill">{d.status}</span></td><td className="right">{money(d.total_amount)}</td></tr>)}</tbody></table>}
     </div>
     <div className="card table-card"><div className="card-title customer-section-title"><h3>Quotes</h3></div>
-      {quotes.length===0?<Empty text="No quotes for this customer."/>:<table><thead><tr><th>Quote</th><th>Date</th><th>Status</th><th className="right">Total</th></tr></thead><tbody>{quotes.map(d=><tr key={d.id}><td><strong>{d.document_number}</strong></td><td>{d.issue_date}</td><td><span className="pill">{d.status}</span></td><td className="right">{money(d.total_amount)}</td></tr>)}</tbody></table>}
+      {quotes.length===0?<Empty text="No quotes for this customer."/>:<table><thead><tr><th>Quote</th><th>Date</th><th>Status</th><th className="right">Total</th></tr></thead><tbody>{quotes.map(d=><tr key={d.id} {...documentRowActions(d)}><td><strong>{d.document_number}</strong></td><td>{d.issue_date}</td><td><span className="pill">{d.status}</span></td><td className="right">{money(d.total_amount)}</td></tr>)}</tbody></table>}
     </div>
     <div className="card table-card"><div className="card-title customer-section-title"><h3>Paid invoice history</h3></div>
-      {paidInvoices.length===0?<Empty text="No paid invoices yet."/>:<table><thead><tr><th>Invoice</th><th>Date</th><th>Status</th><th className="right">Total</th></tr></thead><tbody>{paidInvoices.map(d=><tr key={d.id}><td><strong>{d.document_number}</strong>{d.is_master_invoice&&<span className="pill master-pill">master</span>}</td><td>{d.issue_date}</td><td><span className="pill">{d.status}</span></td><td className="right">{money(d.total_amount)}</td></tr>)}</tbody></table>}
+      {paidInvoices.length===0?<Empty text="No paid invoices yet."/>:<table><thead><tr><th>Invoice</th><th>Date</th><th>Status</th><th className="right">Total</th></tr></thead><tbody>{paidInvoices.map(d=><tr key={d.id} {...documentRowActions(d)}><td><strong>{d.document_number}</strong>{d.is_master_invoice&&<span className="pill master-pill">master</span>}</td><td>{d.issue_date}</td><td><span className="pill">{d.status}</span></td><td className="right">{money(d.total_amount)}</td></tr>)}</tbody></table>}
     </div>
     {edit&&<CustomerModal business={business} customer={current} onClose={()=>setEdit(false)} onSaved={async(updated)=>{setEdit(false);setCurrent(updated);onSaved?.(updated);await load()}}/>}
   </section>
