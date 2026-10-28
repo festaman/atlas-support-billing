@@ -103,11 +103,17 @@ async function createDocumentPdf(doc,items,business,customer){
   text('Amount',cols.amount,y-14,8,bold,{color:rgb(1,1,1)})
   y-=30
   for(const item of items||[]){
-    const descLines=wrapPdfText(item.description,regular,9,hasServiceDates?226:285)
-    const rowH=Math.max(24,descLines.length*12+8)
+    const textWidth=hasServiceDates?226:285
+    const itemTitle=String(item.title||'').trim()
+    const itemDescription=String(item.description||'').trim()
+    const titleLines=itemTitle?wrapPdfText(itemTitle,bold,9,textWidth):[]
+    const descLines=itemDescription && itemDescription!==itemTitle
+      ? wrapPdfText(itemDescription,regular,9,textWidth):[]
+    const rowH=Math.max(24,(titleLines.length+descLines.length)*12+8)
     ensure(rowH+8)
     if(hasServiceDates) text(formatDate(item.service_date||doc.issue_date),cols.date,y-10,8)
-    descLines.forEach((l,idx)=>text(l,cols.desc+5,y-10-idx*12,9))
+    titleLines.forEach((l,idx)=>text(l,cols.desc+5,y-10-idx*12,9,bold))
+    descLines.forEach((l,idx)=>text(l,cols.desc+5,y-10-(titleLines.length+idx)*12,9))
     text(item.quantity,cols.qty,y-10,9)
     text(money(item.unit_price),cols.rate,y-10,9)
     text(money(item.line_total),cols.amount,y-10,9)
@@ -643,18 +649,18 @@ function DocumentEditor({business,type,onClose}) {
   const [discount,setDiscount]=useState(0)
   const [notes,setNotes]=useState('')
   const [payment,setPayment]=useState(business.payment_instructions||'')
-  const [items,setItems]=useState([{description:'',service_date:'',quantity:1,unit_price:0,item_type:null}])
+  const [items,setItems]=useState([{title:'',description:'',service_date:'',quantity:1,unit_price:0,item_type:null}])
   const [saving,setSaving]=useState(false)
   useEffect(()=>{supabase.from('customers').select('*').eq('business_id',business.id).order('name').then(({data})=>setCustomers(data||[]))},[])
   const subtotal=useMemo(()=>items.reduce((a,i)=>a+(Number(i.quantity)||0)*(Number(i.unit_price)||0),0),[items])
   const tax=subtotal*(Number(taxRate)||0)/100
   const total=Math.max(0,subtotal+tax-(Number(discount)||0))
   function setItem(i,k,v){setItems(items.map((x,idx)=>idx===i?{...x,[k]:v}:x))}
-  function addItem(){setItems([...items,{description:'',service_date:'',quantity:1,unit_price:0,item_type:null}])}
+  function addItem(){setItems([...items,{title:'',description:'',service_date:'',quantity:1,unit_price:0,item_type:null}])}
   function removeItem(i){setItems(items.filter((_,idx)=>idx!==i))}
   async function save(){
     if(!customerId) return alert('Choose a customer.')
-    if(!items.some(i=>i.description.trim())) return alert('Add at least one line item.')
+    if(!items.some(i=>(i.title||'').trim()||(i.description||'').trim())) return alert('Add at least one line item with a title or description.')
     setSaving(true)
     const due = type==='invoice' && business.default_terms_days
       ? new Date(new Date(date).getTime()+Number(business.default_terms_days)*86400000).toISOString().slice(0,10)
@@ -667,8 +673,10 @@ function DocumentEditor({business,type,onClose}) {
       payment_instructions:payment, notes
     }).select().single()
     if(error){setSaving(false);return alert(error.message)}
-    const rows=items.filter(i=>i.description.trim()).map((i,idx)=>({
-      document_id:doc.id, item_type:i.item_type||null, description:i.description,
+    const rows=items.filter(i=>(i.title||'').trim()||(i.description||'').trim()).map((i,idx)=>({
+      document_id:doc.id, item_type:i.item_type||null,
+      title:(i.title||'').trim()||null,
+      description:(i.description||'').trim()||(i.title||'').trim(),
       quantity:Number(i.quantity)||0, unit_price:Number(i.unit_price)||0, sort_order:idx,
       service_date:i.service_date||date
     }))
@@ -685,10 +693,11 @@ function DocumentEditor({business,type,onClose}) {
           <label>Date<input type="date" value={date} onChange={e=>setDate(e.target.value)}/></label>
         </div>
         <h3>Line items</h3>
-        <div className="line-head"><span>Description</span><span>Qty / Hrs</span><span>Rate / Price</span><span>Amount</span><span></span></div>
+        <div className="line-head"><span>Title / Description</span><span>Qty / Hrs</span><span>Rate / Price</span><span>Amount</span><span></span></div>
         {items.map((i,idx)=><div className="line-row" key={idx}>
           <div className="line-description-cell">
-            <input placeholder="Labor, material, service…" value={i.description} onChange={e=>setItem(idx,'description',e.target.value)}/>
+            <input aria-label="Line item title" className="line-item-title-input" placeholder="Title (e.g. Network troubleshooting)" value={i.title||''} onChange={e=>setItem(idx,'title',e.target.value)}/>
+            <textarea aria-label="Line item description" rows="2" placeholder="Description / work details (optional)" value={i.description} onChange={e=>setItem(idx,'description',e.target.value)}/>
             <label className="line-date-field"><span>Service date</span><input type="date" value={i.service_date||date} onChange={e=>setItem(idx,'service_date',e.target.value)}/></label>
           </div>
           <input type="number" min="0" step="0.01" value={i.quantity} onChange={e=>setItem(idx,'quantity',e.target.value)}/>
@@ -788,6 +797,7 @@ function DocumentView({doc,business,onBack,onChanged}) {
       {
         document_id:newDoc.id,
         item_type:i.item_type||null,
+        title:i.title||null,
         description:i.description,
         quantity:Number(i.quantity)||0,
         unit_price:Number(i.unit_price)||0,
@@ -885,7 +895,7 @@ function DocumentView({doc,business,onBack,onChanged}) {
         <div><h4>BILL TO</h4><strong>{c.name}</strong>{c.contact_name&&<span>{c.contact_name}</span>}{c.billing_address_line1&&<span>{c.billing_address_line1}</span>}{c.billing_city&&<span>{c.billing_city}, {c.billing_state} {c.billing_postal_code}</span>}{c.email&&<span>{c.email}</span>}</div>
       </div>
       <table className="invoice-table"><thead><tr>{doc.is_master_invoice&&<th>Date</th>}<th>Description</th><th className="right">Qty/Hrs</th><th className="right">Rate/Price</th><th className="right">Amount</th></tr></thead>
-        <tbody>{items.map(i=><tr key={i.id}>{doc.is_master_invoice&&<td className="service-date">{formatDate(i.service_date||doc.issue_date)}</td>}<td>{i.description}</td><td className="right">{i.quantity}</td><td className="right">{money(i.unit_price)}</td><td className="right">{money(i.line_total)}</td></tr>)}</tbody></table>
+        <tbody>{items.map(i=><tr key={i.id}>{doc.is_master_invoice&&<td className="service-date">{formatDate(i.service_date||doc.issue_date)}</td>}<td>{i.title&&<div className="invoice-item-title">{i.title}</div>}{(!i.title||String(i.title).trim()!==String(i.description||'').trim())&&<div className="invoice-item-description">{i.description}</div>}</td><td className="right">{i.quantity}</td><td className="right">{money(i.unit_price)}</td><td className="right">{money(i.line_total)}</td></tr>)}</tbody></table>
       <div className="invoice-bottom"><div className="payment-block">{doc.notes&&<><h4>NOTES</h4><p>{doc.notes}</p></>}{doc.payment_instructions&&<><h4>PAYMENT</h4><p>{doc.payment_instructions}</p></>}</div>
         <div className="invoice-totals"><div><span>Subtotal</span><b>{money(doc.subtotal)}</b></div>{Number(doc.tax_amount)>0&&<div><span>Tax</span><b>{money(doc.tax_amount)}</b></div>}{Number(doc.discount_amount)>0&&<div><span>Discount</span><b>-{money(doc.discount_amount)}</b></div>}<div className="invoice-grand"><span>Total</span><b>{money(doc.total_amount)}</b></div></div></div>
     </article>
