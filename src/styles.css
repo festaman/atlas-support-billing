@@ -68,3 +68,8 @@
 .paid-status-label{display:inline-flex;align-items:center;gap:6px;border-radius:8px;padding:9px 12px;font-weight:700;color:#16572e;background:#e8f4eb;white-space:nowrap}
 .doc-toolbar .toolbar-right{flex-wrap:wrap;justify-content:flex-end}
 @media(max-width:760px){.doc-toolbar .toolbar-right{flex-wrap:wrap}.mark-paid-action{min-width:105px}}
+
+/* Scroll wide invoice tables rather than hiding actions on narrow screens. */
+.dashboard-documents-card,.table-card{overflow-x:auto}
+.dashboard-documents-card table{min-width:660px}
+.table-card table{min-width:720px}
