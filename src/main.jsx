@@ -469,7 +469,7 @@ function Dashboard({business,setPage,onOpenDocument,canManageInvoices}) {
       <Stat label="Outstanding" value={money(stats.outstanding)}/>
       <Stat label="Active quotes" value={stats.quotes}/>
     </div>
-    <div className="card">
+    <div className="card dashboard-documents-card">
       <div className="card-title"><h3>Recent documents</h3></div>
       {recent.length === 0 ? <Empty text="No quotes or invoices yet."/> :
       <table><thead><tr><th>Number</th><th>Customer</th><th>Type</th><th>Status</th><th className="right">Total</th><th className="right no-print">Action</th></tr></thead>
