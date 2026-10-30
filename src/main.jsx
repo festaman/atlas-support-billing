@@ -41,6 +41,7 @@ async function getDashboardBillingTotals(businessId) {
     const {data,error}=await supabase.from('documents')
       .select('document_type,status,total_amount')
       .eq('business_id',businessId)
+      .order('id',{ascending:true})
       .range(offset,offset+pageSize-1)
     if(error) throw error
     for(const d of data||[]){
