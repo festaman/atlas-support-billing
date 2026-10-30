@@ -112,8 +112,8 @@ async function createDocumentPdf(doc,items,business,customer){
   const drawHeader=(full=true)=>{
     if(full&&logo){
       const dims=logo.scale(1)
-      const scale=Math.min(240/dims.width,58/dims.height)
-      page.drawImage(logo,{x:M,y:H-M-55,width:dims.width*scale,height:dims.height*scale})
+      const scale=Math.min(180/dims.width,43.5/dims.height)
+      page.drawImage(logo,{x:M,y:H-M-dims.height*scale,width:dims.width*scale,height:dims.height*scale})
     } else if(!full){ text(business?.name||'Atlas Support',M,H-M-18,12,bold) }
     const title=doc.is_master_invoice?'MASTER BILL':doc.document_type.toUpperCase()
     text(title,W-M-150,H-M-8,19,bold)
