@@ -2,7 +2,7 @@ import React, { useEffect, useMemo, useState } from 'react'
 import { createRoot } from 'react-dom/client'
 import {
   LayoutDashboard, Users, UserCog, FileText, Settings, Plus, LogOut,
-  Trash2, Printer, Save, ChevronLeft, ReceiptText, Mail, Send, Link2, Unlink
+  Trash2, Printer, Save, ChevronLeft, ReceiptText, Mail, Send, Link2, Unlink, CheckCircle2
 } from 'lucide-react'
 import { PDFDocument, StandardFonts, rgb } from 'pdf-lib'
 import { supabase } from './supabase'
@@ -13,6 +13,49 @@ const today = () => new Date().toISOString().slice(0,10)
 
 
 const formatDate = (v) => v ? new Date(`${v}T12:00:00`).toLocaleDateString('en-US') : ''
+
+const canMarkInvoicePaid = (doc) => doc?.document_type === 'invoice' && !['paid','void'].includes(doc.status)
+
+async function markInvoicePaid(doc,businessId) {
+  if(!canMarkInvoicePaid(doc)) return false
+  if(!window.confirm(`Mark invoice ${doc.document_number} (${money(doc.total_amount)}) as paid?\n\nIt will no longer count as outstanding or be included in a master bill.`)) return false
+
+  const {data,error}=await supabase.from('documents')
+    .update({status:'paid'})
+    .eq('id',doc.id)
+    .eq('business_id',businessId)
+    .eq('document_type','invoice')
+    .neq('status','paid')
+    .neq('status','void')
+    .select('id,status')
+    .maybeSingle()
+  if(error) throw error
+  if(!data) throw new Error('This invoice has already been paid, voided, or changed. Refresh the page to see its current status.')
+  return true
+}
+
+async function getDashboardBillingTotals(businessId) {
+  const metrics={open:0,outstanding:0,quotes:0}
+  const pageSize=500
+  for(let offset=0;;offset+=pageSize){
+    const {data,error}=await supabase.from('documents')
+      .select('document_type,status,total_amount')
+      .eq('business_id',businessId)
+      .range(offset,offset+pageSize-1)
+    if(error) throw error
+    for(const d of data||[]){
+      if(d.document_type==='invoice'&&!['paid','void'].includes(d.status)){
+        metrics.open+=1
+        metrics.outstanding+=Number(d.total_amount||0)
+      } else if(d.document_type==='quote'&&!['declined','void'].includes(d.status)) {
+        metrics.quotes+=1
+      }
+    }
+    if((data||[]).length<pageSize) break
+  }
+  return metrics
+}
+
 const templateValue = (v) => (v === null || v === undefined ? '' : String(v))
 function renderEmailTemplate(template, doc, business, customer) {
   const values = {
@@ -257,13 +300,14 @@ function App() {
   if (memberRole === 'removed') return <RemovedAccess user={session.user} />
   if (!business) return <Onboarding user={session.user} onDone={loadBusiness} />
 
+  const canManageInvoices=['owner','admin','technician'].includes(memberRole)
   return (
     <div className="app-shell">
       <Sidebar page={page} setPage={setPage} business={business} role={memberRole} />
       <main className="main">
-        {page === 'dashboard' && <Dashboard business={business} setPage={setPage} onOpenDocument={(id)=>{setDocumentToOpen(id);setPage('documents')}} />}
+        {page === 'dashboard' && <Dashboard business={business} setPage={setPage} canManageInvoices={canManageInvoices} onOpenDocument={(id)=>{setDocumentToOpen(id);setPage('documents')}} />}
         {page === 'customers' && <Customers business={business} onOpenDocument={(id)=>{setDocumentToOpen(id);setPage('documents')}} />}
-        {page === 'documents' && <Documents business={business} initialDocumentId={documentToOpen} onDocumentOpened={()=>setDocumentToOpen(null)} />}
+        {page === 'documents' && <Documents business={business} canManageInvoices={canManageInvoices} initialDocumentId={documentToOpen} onDocumentOpened={()=>setDocumentToOpen(null)} />}
         {page === 'team' && <Team business={business} currentRole={memberRole} />}
         {page === 'new-invoice' && <DocumentEditor business={business} type="invoice" onClose={()=>setPage('documents')} />}
         {page === 'new-quote' && <DocumentEditor business={business} type="quote" onClose={()=>setPage('documents')} />}
@@ -387,24 +431,31 @@ function Sidebar({page,setPage,business,role}) {
   </aside>
 }
 
-function Dashboard({business,setPage,onOpenDocument}) {
+function Dashboard({business,setPage,onOpenDocument,canManageInvoices}) {
   const [stats,setStats] = useState({customers:0, open:0, outstanding:0, quotes:0})
   const [recent,setRecent] = useState([])
-  useEffect(()=>{ load() },[])
+  const [payingId,setPayingId] = useState(null)
+  useEffect(()=>{ load() },[business.id])
   async function load(){
-    const [{count:customers},{data:docs}] = await Promise.all([
-      supabase.from('customers').select('*',{count:'exact',head:true}).eq('business_id',business.id),
-      supabase.from('documents').select('id,document_type,document_number,status,total_amount,issue_date,customers(name)')
-        .eq('business_id',business.id).order('created_at',{ascending:false}).limit(6)
-    ])
-    const d = docs || []
-    setStats({
-      customers: customers || 0,
-      open: d.filter(x=>x.document_type==='invoice' && !['paid','void'].includes(x.status)).length,
-      outstanding: d.filter(x=>x.document_type==='invoice' && !['paid','void'].includes(x.status)).reduce((a,x)=>a+Number(x.total_amount||0),0),
-      quotes: d.filter(x=>x.document_type==='quote' && !['declined','void'].includes(x.status)).length
-    })
-    setRecent(d)
+    try{
+      const [{count:customers},{data:docs},totals] = await Promise.all([
+        supabase.from('customers').select('*',{count:'exact',head:true}).eq('business_id',business.id),
+        supabase.from('documents').select('id,document_type,document_number,status,total_amount,issue_date,customers(name)')
+          .eq('business_id',business.id).order('created_at',{ascending:false}).limit(6),
+        getDashboardBillingTotals(business.id)
+      ])
+      setStats({customers:customers||0,...totals})
+      setRecent(docs||[])
+    }catch(error){
+      console.error('Could not load the dashboard',error)
+    }
+  }
+  async function payInvoice(doc){
+    setPayingId(doc.id)
+    try{
+      if(await markInvoicePaid(doc,business.id)) await load()
+    }catch(error){alert(error.message||String(error))}
+    finally{setPayingId(null)}
   }
   return <section>
     <Header title="Dashboard" subtitle="Atlas Support billing at a glance." />
@@ -421,8 +472,8 @@ function Dashboard({business,setPage,onOpenDocument}) {
     <div className="card">
       <div className="card-title"><h3>Recent documents</h3></div>
       {recent.length === 0 ? <Empty text="No quotes or invoices yet."/> :
-      <table><thead><tr><th>Number</th><th>Customer</th><th>Type</th><th>Status</th><th className="right">Total</th></tr></thead>
-      <tbody>{recent.map(d=><tr key={d.id} className="clickable" tabIndex={0} title={`Open ${d.document_type} ${d.document_number}`} onClick={()=>onOpenDocument(d.id)} onKeyDown={e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();onOpenDocument(d.id)}}}><td><strong>{d.document_number}</strong></td><td>{d.customers?.name}</td><td className="capitalize">{d.document_type}</td><td><span className="pill">{d.status}</span></td><td className="right">{money(d.total_amount)}</td></tr>)}</tbody></table>}
+      <table><thead><tr><th>Number</th><th>Customer</th><th>Type</th><th>Status</th><th className="right">Total</th><th className="right no-print">Action</th></tr></thead>
+      <tbody>{recent.map(d=><tr key={d.id} className="clickable" tabIndex={0} title={`Open ${d.document_type} ${d.document_number}`} onClick={()=>onOpenDocument(d.id)} onKeyDown={e=>{if(e.target===e.currentTarget&&(e.key==='Enter'||e.key===' ')){e.preventDefault();onOpenDocument(d.id)}}}><td><strong>{d.document_number}</strong></td><td>{d.customers?.name}</td><td className="capitalize">{d.document_type}</td><td><span className="pill">{d.status}</span></td><td className="right">{money(d.total_amount)}</td><td className="right no-print">{canManageInvoices&&canMarkInvoicePaid(d)&&<button type="button" className="secondary mark-paid-action" disabled={payingId===d.id} onClick={e=>{e.stopPropagation();payInvoice(d)}} onKeyDown={e=>e.stopPropagation()}><CheckCircle2 size={15}/>{payingId===d.id?'Updating…':'Mark Paid'}</button>}</td></tr>)}</tbody></table>}
     </div>
   </section>
 }
@@ -617,10 +668,18 @@ function formatCustomerAddress(c,prefix){
 }
 
 
-function Documents({business,initialDocumentId=null,onDocumentOpened}) {
+function Documents({business,canManageInvoices,initialDocumentId=null,onDocumentOpened}) {
   const [docs,setDocs]=useState([])
   const [view,setView]=useState(null)
-  useEffect(()=>{load()},[])
+  const [payingId,setPayingId]=useState(null)
+  useEffect(()=>{load()},[business.id])
+  async function payInvoice(doc){
+    setPayingId(doc.id)
+    try{
+      if(await markInvoicePaid(doc,business.id)) await load()
+    }catch(error){alert(error.message||String(error))}
+    finally{setPayingId(null)}
+  }
   async function load(){
     const {data}=await supabase.from('documents').select('*, customers(*)').eq('business_id',business.id).order('created_at',{ascending:false})
     const loaded=data||[]
@@ -631,12 +690,12 @@ function Documents({business,initialDocumentId=null,onDocumentOpened}) {
       onDocumentOpened?.()
     }
   }
-  if(view) return <DocumentView doc={view} business={business} onBack={()=>setView(null)} onChanged={load}/>
+  if(view) return <DocumentView doc={view} business={business} canManageInvoices={canManageInvoices} onBack={()=>setView(null)} onChanged={load}/>
   return <section><Header title="Quotes & Invoices" subtitle="All customer billing documents."/>
     <div className="card table-card">
       {docs.length===0?<Empty text="No documents yet."/>:
-      <table><thead><tr><th>Number</th><th>Date</th><th>Customer</th><th>Type</th><th>Status</th><th className="right">Total</th></tr></thead>
-      <tbody>{docs.map(d=><tr key={d.id} className="clickable" onClick={()=>setView(d)}><td><strong>{d.document_number}</strong>{d.is_master_invoice&&<span className="pill master-pill">master</span>}</td><td>{d.issue_date}</td><td>{d.customers?.name}</td><td className="capitalize">{d.document_type}</td><td><span className="pill">{d.status}</span></td><td className="right">{money(d.total_amount)}</td></tr>)}</tbody></table>}
+      <table><thead><tr><th>Number</th><th>Date</th><th>Customer</th><th>Type</th><th>Status</th><th className="right">Total</th><th className="right no-print">Action</th></tr></thead>
+      <tbody>{docs.map(d=><tr key={d.id} className="clickable" tabIndex={0} title={`Open ${d.document_type} ${d.document_number}`} onClick={()=>setView(d)} onKeyDown={e=>{if(e.target===e.currentTarget&&(e.key==='Enter'||e.key===' ')){e.preventDefault();setView(d)}}}><td><strong>{d.document_number}</strong>{d.is_master_invoice&&<span className="pill master-pill">master</span>}</td><td>{d.issue_date}</td><td>{d.customers?.name}</td><td className="capitalize">{d.document_type}</td><td><span className="pill">{d.status}</span></td><td className="right">{money(d.total_amount)}</td><td className="right no-print">{canManageInvoices&&canMarkInvoicePaid(d)&&<button type="button" className="secondary mark-paid-action" disabled={payingId===d.id} onClick={e=>{e.stopPropagation();payInvoice(d)}} onKeyDown={e=>e.stopPropagation()}><CheckCircle2 size={15}/>{payingId===d.id?'Updating…':'Mark Paid'}</button>}</td></tr>)}</tbody></table>}
     </div>
   </section>
 }
@@ -724,7 +783,7 @@ function DocumentEditor({business,type,onClose}) {
   </section>
 }
 
-function DocumentView({doc,business,onBack,onChanged}) {
+function DocumentView({doc,business,canManageInvoices,onBack,onChanged}) {
   const [items,setItems]=useState([])
   const [status,setStatus]=useState(doc.status)
   const [convertedInvoice,setConvertedInvoice]=useState(null)
@@ -734,6 +793,7 @@ function DocumentView({doc,business,onBack,onChanged}) {
   const [showEmail,setShowEmail]=useState(false)
   const [emailSending,setEmailSending]=useState(false)
   const [undoingMaster,setUndoingMaster]=useState(false)
+  const [markingPaid,setMarkingPaid]=useState(false)
 
   useEffect(()=>{setStatus(doc.status);loadDocumentDetails()},[doc.id])
 
@@ -761,7 +821,20 @@ function DocumentView({doc,business,onBack,onChanged}) {
     }
   }
 
+  async function markPaid(){
+    if(!canManageInvoices||!canMarkInvoicePaid({...doc,status})) return
+    setMarkingPaid(true)
+    try{
+      if(await markInvoicePaid({...doc,status},business.id)){
+        setStatus('paid')
+        await onChanged()
+      }
+    }catch(error){alert(error.message||String(error))}
+    finally{setMarkingPaid(false)}
+  }
+
   async function changeStatus(v){
+    if(v==='paid') return markPaid()
     setStatus(v)
     const {error}=await supabase.from('documents').update({status:v}).eq('id',doc.id)
     if(error){setStatus(doc.status);return alert(error.message)}
@@ -881,8 +954,10 @@ function DocumentView({doc,business,onBack,onChanged}) {
       {doc.document_type==='quote'&&status==='accepted'&&!convertedInvoice&&<button className="primary" onClick={convertToInvoice} disabled={converting}><ReceiptText size={18}/>{converting?'Converting…':'Convert to Invoice'}</button>}
       {doc.document_type==='quote'&&convertedInvoice&&<span className="converted-badge">Converted to {convertedInvoice.document_number}</span>}
       {doc.is_master_invoice&&!['paid','void'].includes(status)&&!doc.master_undone_at&&<button className="secondary" onClick={undoMaster} disabled={undoingMaster}><ChevronLeft size={18}/>{undoingMaster?'Restoring…':'Undo Master Bill'}</button>}
+      {status==='paid'&&doc.document_type==='invoice'&&<span className="paid-status-label"><CheckCircle2 size={17}/>Paid</span>}
+      {canManageInvoices&&canMarkInvoicePaid({...doc,status})&&!doc.master_undone_at&&<button type="button" className="primary" onClick={markPaid} disabled={markingPaid}><CheckCircle2 size={17}/>{markingPaid?'Updating…':'Mark Paid'}</button>}
       {!doc.master_undone_at&&<button className="secondary" onClick={openEmail}><Mail size={18}/>{emailHistory.some(x=>x.status==='sent')?'Email / Resend':'Email'}</button>}
-      <select value={doc.master_undone_at?'void':status} onChange={e=>changeStatus(e.target.value)} disabled={Boolean(doc.master_undone_at)}><option>draft</option><option>sent</option>{doc.document_type==='quote'&&<option>accepted</option>}{doc.document_type==='quote'&&<option>declined</option>}{doc.document_type==='invoice'&&<option>paid</option>}<option>void</option></select>
+      <select value={doc.master_undone_at?'void':status} onChange={e=>changeStatus(e.target.value)} disabled={Boolean(doc.master_undone_at)||!canManageInvoices||markingPaid}><option>draft</option><option>sent</option>{doc.document_type==='quote'&&<option>accepted</option>}{doc.document_type==='quote'&&<option>declined</option>}{doc.document_type==='invoice'&&<option>paid</option>}<option>void</option></select>
       <button className="primary" onClick={()=>window.print()}><Printer size={18}/>Print / PDF</button>
     </div></div>
     {lastSent&&<div className="email-last-sent no-print"><Mail size={16}/>Last emailed {new Date(lastSent.sent_at).toLocaleString()} to {lastSent.to_email}{lastSent.sender_email&&<> from {lastSent.sender_email}</>}</div>}
